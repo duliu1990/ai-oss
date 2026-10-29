@@ -1,0 +1,12 @@
+.DS_Store
+**/.venv/
+**/node_modules/
+**/__pycache__/
+**/.pytest_cache/
+**/.ruff_cache/
+**/.playwright-cli/
+**/DerivedData/
+**/build/
+**/.env
+**/.env.*
+!**/.env.example

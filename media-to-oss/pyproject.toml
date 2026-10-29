@@ -1,0 +1,29 @@
+[project]
+name = "media-to-oss"
+version = "0.1.0"
+description = "Local media downloader with optional AI discovery and private OSS upload"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+  "fastapi>=0.115,<1",
+  "uvicorn>=0.34,<1",
+  "yt-dlp[default]>=2026.3.17",
+  "oss2>=2.19,<3",
+  "httpx>=0.28,<1",
+  "beautifulsoup4>=4.13,<5",
+  "pydantic-settings>=2.8,<3",
+  "truststore>=0.10,<1",
+]
+
+[dependency-groups]
+dev = ["pytest>=8,<10", "pytest-asyncio>=0.26,<2", "ruff>=0.11,<1"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+asyncio_mode = "auto"
+
+[tool.ruff]
+target-version = "py312"
+line-length = 110
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I", "UP"]

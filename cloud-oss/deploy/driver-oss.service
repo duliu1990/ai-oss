@@ -1,0 +1,28 @@
+[Unit]
+Description=Driver OSS private personal drive
+Wants=network-online.target
+After=network-online.target
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=driver-oss
+Group=driver-oss
+WorkingDirectory=/opt/driver-oss/current
+ExecStart=/opt/driver-oss/current/.venv/bin/python /opt/driver-oss/current/app.py
+Environment=PORT=8700
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONDONTWRITEBYTECODE=1
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=60
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+RestrictSUIDSGID=true
+
+[Install]
+WantedBy=multi-user.target
