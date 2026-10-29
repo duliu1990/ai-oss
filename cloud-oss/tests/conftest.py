@@ -3,9 +3,12 @@ from __future__ import annotations
 import hashlib
 import io
 import mimetypes
+import time
 from datetime import UTC, datetime
 from types import SimpleNamespace
 
+import bcrypt
+import jwt
 import pytest
 from fastapi.testclient import TestClient
 from oss2.exceptions import NoSuchKey, ServerError
@@ -13,6 +16,10 @@ from oss2.exceptions import NoSuchKey, ServerError
 import oss_store
 from app import create_app
 from config import Settings
+
+TEST_AUTH_USERNAME = "testadmin"
+TEST_AUTH_PASSWORD = "testpass123"
+TEST_JWT_SECRET = "test-jwt-secret-key-for-testing"
 
 
 class FakeBody:
@@ -244,6 +251,16 @@ class FakeBucket:
         return hashlib.md5(data, usedforsecurity=False).hexdigest()
 
 
+def _patch_oss(monkeypatch) -> FakeBucket:
+    bucket = FakeBucket()
+    monkeypatch.setattr(oss_store.oss2, "Bucket", lambda *args, **kwargs: bucket)
+    oss_store._bucket_cache.clear()
+    oss_store._versioning_cache.clear()
+    oss_store._create_locks.clear()
+    oss_store._upload_keys.clear()
+    return bucket
+
+
 @pytest.fixture
 def settings() -> Settings:
     return Settings(
@@ -282,3 +299,50 @@ def fake_bucket(monkeypatch) -> FakeBucket:
 def client(settings: Settings, fake_bucket: FakeBucket):
     with TestClient(create_app(settings)) as test_client:
         yield test_client
+
+
+@pytest.fixture
+def auth_settings(monkeypatch):
+    """Settings with authentication configured."""
+    from routes import auth
+
+    password_hash = bcrypt.hashpw(TEST_AUTH_PASSWORD.encode(), bcrypt.gensalt()).decode()
+    configured = Settings(
+        oss_endpoint="https://test.oss-cn-test.aliyuncs.com",
+        oss_bucket="test-bucket",
+        oss_access_key_id="test-key-id",
+        oss_access_key_secret="test-key-secret",
+        oss_prefix="test/",
+        note_oss_prefix="notes/",
+        auth_username=TEST_AUTH_USERNAME,
+        auth_password_hash=password_hash,
+        jwt_secret_key=TEST_JWT_SECRET,
+        jwt_expire_minutes=60,
+        _env_file=None,
+    )
+    _patch_oss(monkeypatch)
+    auth._fail_window.clear()
+    return configured
+
+
+@pytest.fixture
+def auth_client(auth_settings):
+    """Test client with authentication configured."""
+    with TestClient(create_app(auth_settings)) as test_client:
+        yield test_client
+
+
+@pytest.fixture
+def auth_token(auth_settings):
+    """Pre-generated valid JWT token."""
+    payload = {
+        "sub": TEST_AUTH_USERNAME,
+        "iat": int(time.time()),
+        "exp": int(time.time()) + 3600,
+    }
+    return jwt.encode(payload, TEST_JWT_SECRET, algorithm="HS256")
+
+
+def auth_header(token: str) -> dict[str, str]:
+    """Build an Authorization header."""
+    return {"Authorization": f"Bearer {token}"}

@@ -15,12 +15,6 @@ uv run --locked python app.py
 
 Open `http://127.0.0.1:8700`. `GET /healthz` remains available even when OSS is not configured. The OSS credentials need list, get, put, multipart upload, copy, and delete permissions within the configured prefix.
 
-## Deploy to ECS
-
-See [the Ubuntu ECS deployment guide](DEPLOYMENT.md) for local frontend builds, SSH-based
-publishing, systemd setup, rollback, and private access through an SSH tunnel.
-The application has no login: do not expose port 8700 publicly.
-
 ## API
 
 - `GET /api/config` — non-sensitive bucket, prefix, and port settings
