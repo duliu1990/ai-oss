@@ -1,0 +1,48 @@
+{
+  "name": "media-player-oss-frontend",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "engines": {
+    "node": ">=22.12.0",
+    "npm": ">=10"
+  },
+  "scripts": {
+    "dev": "vite",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "build": "npm run typecheck && vite build",
+    "preview": "vite preview --host 127.0.0.1",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "native:add:android": "cap add android",
+    "native:add:ios": "cap add ios --packagemanager SPM",
+    "native:sync": "cap sync",
+    "android:sync": "cap sync android",
+    "ios:sync": "cap sync ios",
+    "android:prepare": "npm run build && npm run android:sync",
+    "ios:prepare": "npm run build && npm run ios:sync",
+    "android:open": "cap open android",
+    "ios:open": "cap open ios",
+    "android:debug": "npm run android:prepare && node scripts/native-build.mjs android-debug",
+    "android:release": "npm run android:prepare && node scripts/native-build.mjs android-release",
+    "ios:simulator": "npm run ios:prepare && node scripts/native-build.mjs ios-simulator",
+    "ios:archive": "npm run ios:prepare && node scripts/native-build.mjs ios-archive"
+  },
+  "dependencies": {
+    "@capacitor/android": "8.5.3",
+    "@capacitor/core": "8.5.3",
+    "@capacitor/ios": "8.5.3",
+    "react": "19.3.1",
+    "react-dom": "19.3.1"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "8.5.3",
+    "@types/node": "24.19.2",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "@vitejs/plugin-react": "6.1.2",
+    "typescript": "5.9.3",
+    "vite": "8.3.4",
+    "vitest": "5.0.5"
+  }
+}
