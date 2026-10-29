@@ -10,12 +10,6 @@ __pycache__/
 *.pyc
 .DS_Store
 
-# Runtime state and private deployment configuration
-/backups/
-/deploy/data/
-/deploy/caddy-data/
-/deploy/caddy-config/
-
 # Local IDE state, signing credentials, and native build output
 **/.idea/
 **/local.properties
