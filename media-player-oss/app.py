@@ -2,7 +2,7 @@ import logging
 from contextlib import asynccontextmanager
 from urllib.parse import urlsplit
 
-from fastapi import APIRouter, FastAPI, Query, Request
+from fastapi import APIRouter, Depends, FastAPI, Query, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 from starlette.middleware.cors import CORSMiddleware
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
+import auth
 import oss_store
 from config import Settings, settings
 from library import Library
@@ -21,6 +22,8 @@ PORT = 8767
 setup_logging(settings)
 log = logging.getLogger("app")
 router = APIRouter()
+# Every data route requires a valid login; only index, assets, health and auth stay public.
+api = APIRouter(dependencies=[Depends(auth.require_auth)])
 
 
 @asynccontextmanager
@@ -36,6 +39,8 @@ async def lifespan(app: FastAPI):
     )
     if settings.oss_missing:
         log.warning("OSS 未配置完整，缺少：%s", ", ".join(settings.oss_missing))
+    if not settings.auth_configured:
+        log.error("登录凭据未配置完整，缺少：%s；所有数据接口将返回 503", ", ".join(settings.auth_missing))
     yield
     log.info("播放器已停止")
 
@@ -144,7 +149,7 @@ def health():
     return {"status": "ok"}
 
 
-@router.get("/api/config")
+@api.get("/api/config")
 def config_status(request: Request):
     settings = request.app.state.settings
     return {
@@ -155,7 +160,7 @@ def config_status(request: Request):
     }
 
 
-@router.get("/api/tracks")
+@api.get("/api/tracks")
 def tracks(request: Request):
     listing = oss_store.list_audio(request.app.state.settings)
     for track in listing["tracks"]:
@@ -163,7 +168,7 @@ def tracks(request: Request):
     return listing
 
 
-@router.put("/api/tracks/meta")
+@api.put("/api/tracks/meta")
 def update_meta(data: MetaInput, request: Request):
     key = oss_store.ensure_audio_key(data.key, request.app.state.settings)
     entry = request.app.state.library.update(
@@ -172,7 +177,7 @@ def update_meta(data: MetaInput, request: Request):
     return {"key": key, **entry}
 
 
-@router.get("/api/stream")
+@api.get("/api/stream")
 def stream(request: Request, key: str = Query(min_length=1, max_length=1023)):
     try:
         audio = oss_store.open_stream(key, request.headers.get("range"), request.app.state.settings)
@@ -203,6 +208,8 @@ def create_app(app_settings: Settings | None = None, library_store: Library | No
         check_dir=False,
     )
     application.include_router(router)
+    application.include_router(auth.router)
+    application.include_router(api)
     application.add_exception_handler(UserError, user_error)
     application.add_exception_handler(RequestValidationError, invalid_request)
     application.add_exception_handler(Exception, internal_error)
@@ -215,8 +222,8 @@ def create_app(app_settings: Settings | None = None, library_store: Library | No
         CORSMiddleware,
         allow_origins=configured.cors_origins,
         allow_credentials=False,
-        allow_methods=["GET", "HEAD", "PUT", "OPTIONS"],
-        allow_headers=["Content-Type", "X-Player-Client", "Range"],
+        allow_methods=["GET", "HEAD", "POST", "PUT", "OPTIONS"],
+        allow_headers=["Content-Type", "X-Player-Client", "Range", "Authorization"],
         expose_headers=["Accept-Ranges", "Content-Range", "Content-Length"],
     )
     application.add_middleware(

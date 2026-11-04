@@ -3,6 +3,7 @@ import { errorMessage, isAbort } from './api/client';
 import type { LibraryView, SortOrder, Track } from './api/types';
 import { ConnectionDialog, EditDialog } from './components/Dialogs';
 import { Icon } from './components/Icon';
+import { LoginScreen } from './components/LoginScreen';
 import { PlayerBar } from './components/PlayerBar';
 import { Sidebar } from './components/Sidebar';
 import { TrackList } from './components/TrackList';
@@ -58,7 +59,7 @@ function PlayerScreen() {
   return <>
     <a className="skip-link" href="#library">跳到曲库</a>
     <div className="app-shell">
-      <Sidebar state={state} view={view} native={native} online={online} onView={setView} onSettings={() => setSettings(true)} />
+      <Sidebar state={state} view={view} native={native} online={online} onView={setView} onSettings={() => setSettings(true)} onLogout={library.logout} />
       <main className="main" id="library" tabIndex={-1}>
         <header className="page-heading"><div>
           <p className="eyebrow">YOUR MUSIC, FROM YOUR OWN CLOUD.</p>
@@ -86,7 +87,9 @@ function PlayerScreen() {
 }
 
 export default function App() {
-  const { base } = useLibrary();
+  const { base, authenticated } = useLibrary();
+  // Native builds reach the connection dialog through PlayerScreen, so an unset service comes first.
+  if (base !== null && !authenticated) return <LoginScreen key={base} />;
   // A service switch resets only UI state, never the single shared Audio engine.
   return <PlayerScreen key={base ?? 'disconnected'} />;
 }

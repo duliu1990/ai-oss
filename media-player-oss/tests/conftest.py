@@ -1,7 +1,29 @@
+import time
+
+import bcrypt
+import jwt
 import pytest
 from oss2.exceptions import NoSuchKey, ServerError
 
 from config import Settings
+
+AUTH_USERNAME = "player"
+AUTH_PASSWORD = "test-password-123"
+# 32+ bytes keeps PyJWT from emitting InsecureKeyLengthWarning during tests.
+JWT_SECRET = "test-jwt-secret-key-with-enough-bytes"
+# Hash once with the lowest cost factor: tests only need a verifiable hash, not a slow one.
+AUTH_PASSWORD_HASH = bcrypt.hashpw(AUTH_PASSWORD.encode(), bcrypt.gensalt(rounds=4)).decode()
+
+
+def issue_token(app_settings: Settings, **claims) -> str:
+    """Sign a token with the settings' own secret so tests never hardcode one."""
+    now = int(time.time())
+    payload = {"sub": app_settings.auth_username, "iat": now, "exp": now + 3600, **claims}
+    return jwt.encode(payload, app_settings.jwt_secret_key.get_secret_value(), algorithm="HS256")
+
+
+def bearer(app_settings: Settings, token: str | None = None) -> dict[str, str]:
+    return {"Authorization": f"Bearer {token if token is not None else issue_token(app_settings)}"}
 
 
 class FakeItem:
@@ -83,4 +105,7 @@ def settings():
         oss_access_key_id="id",
         oss_access_key_secret="secret",
         oss_prefix="media/",
+        auth_username=AUTH_USERNAME,
+        auth_password_hash=AUTH_PASSWORD_HASH,
+        jwt_secret_key=JWT_SECRET,
     )

@@ -25,6 +25,27 @@ class Settings(BaseSettings):
     allowed_origins: list[str] = Field(default_factory=list)
     enable_dev_origin: bool = False
     frontend_dist: str = "frontend/dist"
+    auth_username: str = ""
+    auth_password_hash: SecretStr = SecretStr("")
+    jwt_secret_key: SecretStr = SecretStr("")
+    jwt_expire_minutes: int = Field(default=1440, ge=1, le=43200)
+
+    @field_validator("auth_username")
+    @classmethod
+    def validate_auth_username(cls, value: str) -> str:
+        value = value.strip()
+        if len(value) > 100 or any(ord(c) < 32 for c in value):
+            raise ValueError("AUTH_USERNAME 不能超过 100 字符或包含控制字符")
+        return value
+
+    @field_validator("jwt_secret_key")
+    @classmethod
+    def validate_jwt_secret(cls, value: SecretStr) -> SecretStr:
+        # PyJWT warns below 32 bytes; reject weak secrets instead of signing with them.
+        secret = value.get_secret_value()
+        if secret and len(secret.encode("utf-8")) < 32:
+            raise ValueError("JWT_SECRET_KEY 至少需要 32 字节，请用 secrets.token_urlsafe(32) 生成")
+        return value
 
     @field_validator("allowed_hosts")
     @classmethod
@@ -108,6 +129,24 @@ class Settings(BaseSettings):
             "OSS_BUCKET": self.oss_bucket,
             "OSS_ACCESS_KEY_ID": self.oss_access_key_id.get_secret_value(),
             "OSS_ACCESS_KEY_SECRET": self.oss_access_key_secret.get_secret_value(),
+        }
+        return [key for key, value in values.items() if not value.strip()]
+
+    @property
+    def auth_configured(self) -> bool:
+        """True only when a complete login credential set is present."""
+        return bool(
+            self.auth_username
+            and self.auth_password_hash.get_secret_value()
+            and self.jwt_secret_key.get_secret_value()
+        )
+
+    @property
+    def auth_missing(self) -> list[str]:
+        values = {
+            "AUTH_USERNAME": self.auth_username,
+            "AUTH_PASSWORD_HASH": self.auth_password_hash.get_secret_value(),
+            "JWT_SECRET_KEY": self.jwt_secret_key.get_secret_value(),
         }
         return [key for key, value in values.items() if not value.strip()]
 

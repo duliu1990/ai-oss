@@ -2,7 +2,7 @@
 
 A personal music player for private Aliyun OSS audio: React + TypeScript on the Web, the same UI packaged locally with Capacitor 8 for Android/iOS, and a Python/FastAPI streaming backend. It complements [media-to-oss](../media-to-oss): upload there, listen here.
 
-**Public anonymous access is intentional. There is no login, account, password, or application token. Anyone who can reach the service can listen, rename tracks, change favorites, and generate OSS charges. HTTPS, CORS, Host checks, and the client header are not authentication.**
+**Login is required and mandatory. A single fixed account lives in `.env` (username + bcrypt password hash) and issues stateless HS256 JWTs; there is no database and no registration. Until `AUTH_USERNAME`, `AUTH_PASSWORD_HASH`, and `JWT_SECRET_KEY` are all set, every `/api/*` data route returns 503 — the service fails closed, never open. Only `/`, `/assets/*`, `/healthz`, and `/api/auth/*` are public.**
 
 - 列出 `OSS_PREFIX` 下的全部音频（mp3 / m4a / aac / ogg / opus / wav / flac），自动翻页，按上传时间倒序。
 - 通过本机服务**按字节范围转发** OSS 数据：拖动进度条秒开，不需要公共读 Bucket、不需要配置 CORS，浏览器也拿不到签名链接或密钥。
@@ -64,6 +64,21 @@ Open **http://127.0.0.1:5173** (not `localhost:5173`). Vite forwards `/api` to p
 | `ALLOWED_HOSTS` | JSON array of exact lowercase DNS/IPv4 hosts, without scheme, wildcard, or port. Default: `["localhost","127.0.0.1"]`. |
 | `ALLOWED_ORIGINS` | JSON array of exact canonical origins, no path, trailing slash, or default port. Native apps require `["capacitor://localhost","https://localhost"]`; Web-only can use `[]`. Same-origin Web needs no extra entry. |
 | `ENABLE_DEV_ORIGIN` | Default `false`; `true` adds only `http://127.0.0.1:5173` for Vite hot reload. |
+| `AUTH_USERNAME` | 必填；登录用户名，最长 100 字符 |
+| `AUTH_PASSWORD_HASH` | 必填；密码的 bcrypt 哈希，**不是明文密码** |
+| `JWT_SECRET_KEY` | 必填；JWT 签名密钥，至少 32 字节，泄露等同于密码泄露 |
+| `JWT_EXPIRE_MINUTES` | 登录有效期（分钟），默认 `1440`（1 天），范围 1–43200 |
+
+生成凭据（在项目根目录执行）：
+
+```bash
+# 密码哈希：把 你的密码 换成实际密码
+uv run python -c "import bcrypt; print(bcrypt.hashpw(b'你的密码', bcrypt.gensalt()).decode())"
+# JWT 密钥
+uv run python -c "import secrets; print(secrets.token_urlsafe(32))"
+```
+
+把输出分别写入 `.env` 的 `AUTH_PASSWORD_HASH` 与 `JWT_SECRET_KEY`，然后重启服务。修改密码或密钥会使已签发的令牌全部失效，所有客户端需要重新登录。
 
 Examples use single-quoted JSON in dotenv files. These quotes are removed by the dotenv parser, not sent as part of the JSON. The application reads the root `.env` directly; do not source it as a shell script or put credentials in frontend variables. Shared metadata lives in the backend's local `data/library.json`; playback preferences remain on each device.
 
@@ -91,19 +106,25 @@ media-to-oss 上传时使用随机对象名（如 `d95ecce8….mp3`），同时�
 
 本机曲库文件只是 JSON，可以备份或手动编辑；文件损坏时服务会拒绝启动并提示，而不会覆盖它。
 
-## 4. Streaming and the anonymous security boundary
+## 4. Streaming and the security boundary
 
 - All clients use the Python `/api/stream?key=…` endpoint. Python forwards OSS byte ranges (206 and 416); it does not expose OSS credentials/signed links or fetch whole songs into client-side Blobs. Private buckets need no browser-facing OSS CORS policy.
 - Only audio objects under `OSS_PREFIX` are readable; traversal is rejected. Logs redact credentials and signatures. The UI reports redacted errors, while server logs retain diagnostic error codes/RequestIds.
-- Host and exact-origin checks reduce unintended browser cross-site access. Writes require `X-Player-Client: web`, a public marker that anyone can send, **not a credential**. Nonbrowser clients can access the service anonymously.
-- Use a dedicated read-only OSS identity. TLS, CORS, Host checks, and security headers do not make the app private. Monitor OSS usage, bandwidth, and spending alerts.
+- 数据接口在路由注册时统一挂上鉴权依赖：`/api/config`、`/api/tracks`、`/api/tracks/meta`、`/api/stream` 全部需要有效 JWT。新增数据路由请注册到 `api` 路由器上，否则会默认公开。
+- `<audio>` 元素和原生媒体播放器无法设置请求头，因此 `/api/stream` 额外接受 `?token=` 查询参数。这使令牌出现在 URL 与 Range 请求中：服务只监听回环地址且访问日志默认关闭，若将来经反向代理暴露，必须同时关闭该代理的查询串日志。
+- Host and exact-origin checks reduce unintended browser cross-site access. Writes additionally require `X-Player-Client: web`, a public marker that anyone can send, **not a credential** — the JWT is the credential.
+- 登录失败在单进程内限流：5 分钟累计 5 次失败后返回 429。限流窗口是全局的，不区分来源 IP。
+- 客户端只在本机存储里按服务地址保存令牌：任何数据请求收到 401 就立即丢弃该令牌、停止播放并退回登录页；侧栏的“退出登录”做同一件事。密码只用于换取令牌，从不落盘。
+- Use a dedicated read-only OSS identity. TLS, CORS, Host checks, and security headers are defense in depth, not a substitute for the login. Monitor OSS usage, bandwidth, and spending alerts.
 - JSON metadata requires **one local application instance and one Uvicorn worker**. Do not run two local backend processes against the same library file.
 
 ## 5. Android and iOS apps
 
 The generated source projects are `frontend/android` and `frontend/ios`, with ID **com.mediaplayeross.app**, display name **OSS 音乐**, and `webDir: dist`. The app contains local Web assets: there is no `server.url`, remote-page wrapper, global cleartext allowance, or ATS bypass. HTTPS APIs/media with a valid system-trusted certificate are supported.
 
-On first launch, enter the server's HTTPS **origin**, for example `https://music.example.com`. Credentials, paths, queries, and fragments are rejected; a nondefault port is allowed. The app's connection settings can switch servers, stopping old playback and clearing old-server tracks/progress. Web always uses its own origin, even if a native default is configured.
+On first launch, enter the server's HTTPS **origin**, for example `https://music.example.com`. Credentials, paths, queries, and fragments are rejected; a nondefault port is allowed. The app then asks for the username and password and stores the returned JWT **per server origin**, so switching servers does not carry a token across them. The app's connection settings can switch servers, stopping old playback and clearing old-server tracks/progress. Web always uses its own origin, even if a native default is configured.
+
+原生客户端登录依赖两项服务端配置：`ALLOWED_ORIGINS` 必须包含 `capacitor://localhost` 与 `https://localhost`，并且服务端 CORS 已放开 `POST` 方法和 `Authorization` 请求头（本项目默认如此）。
 
 To prefill a public native default, copy `frontend/.env.example` to the ignored `frontend/.env.local` and set `VITE_API_BASE_URL`, or pass it when preparing:
 
@@ -166,6 +187,10 @@ Codec availability, autoplay, media keys, volume behavior, interruptions, and su
 ## 6. Local troubleshooting and verification
 
 - **List access denied:** check bucket-level `oss:ListObjects`; object reads require `oss:GetObject` under the correct prefix. Expired STS credentials must be renewed on the server, never shipped to the app.
+- **所有接口返回 503「服务尚未配置登录凭据」：** `.env` 缺少 `AUTH_USERNAME` / `AUTH_PASSWORD_HASH` / `JWT_SECRET_KEY` 中的至少一项，启动日志会列出具体缺哪一项。补齐后重启服务。
+- **登录返回 401 但密码确认正确：** `AUTH_PASSWORD_HASH` 必须是 bcrypt 哈希而非明文；重新生成哈希时注意 shell 会对 `$` 做替换，dotenv 里的哈希不要加双引号。
+- **登录返回 429：** 5 分钟内失败达 5 次触发限流，稍候重试或重启服务清空窗口。
+- **播放中途失败且提示重新登录：** JWT 已过期（默认 1 天）。重新登录即可；如需更长有效期调整 `JWT_EXPIRE_MINUTES`。
 - **403 requests:** check the exact Host/origin arrays and `X-Player-Client: web` for writes. Do not fix this by wildcard CORS or weakening Host validation.
 - **App connects but audio fails:** check both native origins are allowed, the server's certificate chain is trusted, and the device supports that codec. WAV/FLAC/OGG/Opus support differs between WebViews. Use isolated test metadata for device acceptance.
 - **Certificate errors:** verify the development server's full chain, domain, expiration, and system trust. Install enterprise roots through approved OS mechanisms; do not disable certificate validation.
@@ -188,12 +213,13 @@ No signed APK/IPA, simulator/device acceptance, actual OSS integration acceptanc
 ### Layout and official references
 
 ```text
-frontend/src/       Shared React Web/App UI, API client, playback, connection settings
+frontend/src/       Shared React Web/App UI, login screen, API client, playback, connection settings
 frontend/android/   Generated native Android sources and Gradle wrapper
 frontend/ios/       Generated Xcode + SPM sources
 frontend/scripts/   Native build command wrapper
 frontend/dist/      Ignored Web build served locally by Python
 app.py              HTTP API, byte streaming, health and local Web serving
+auth.py             Login endpoint, JWT issuing and the require_auth dependency
 config.py           Exact Host/origin validation and project-relative paths
 library.py          Shared local JSON overrides and favorites
 oss_store.py        Read-only OSS catalog/listing/Range access

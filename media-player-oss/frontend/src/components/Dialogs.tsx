@@ -77,16 +77,16 @@ export function ConnectionDialog({ initialValue, connected, onClose, onMessage }
     event.preventDefault();
     try {
       const persisted = library.connect(value);
-      onMessage(persisted ? '连接地址已保存，正在读取曲库。' : '正在连接；本机存储不可用，下次需重新输入地址。');
+      onMessage(persisted ? '连接地址已保存。' : '正在连接；本机存储不可用，下次需重新输入地址。');
       onClose();
     } catch (failure) { setError(errorMessage(failure)); }
   };
   return <Dialog id="connection-dialog" titleId="connection-title" onCancel={() => { if (connected) onClose(); }}>
     <form onSubmit={submit}>
       <h2 id="connection-title">连接播放服务</h2>
-      <p className="dialog-hint">输入公开播放服务的 HTTPS 地址，仅含域名和可选端口。无需账号、密码或 OSS 凭据。</p>
+      <p className="dialog-hint">输入播放服务的 HTTPS 地址，仅含域名和可选端口。连接后需用该服务的账号登录，无需 OSS 凭据。</p>
       <label className="field connection-field">服务地址<input id="server-origin" type="url" required value={value} maxLength={2048} placeholder="https://music.example.com" autoCapitalize="none" autoCorrect="off" autoComplete="url" spellCheck={false} onChange={(event) => setValue(event.target.value)} /></label>
-      <p className="dialog-hint">切换服务会停止播放并清除旧曲库、队列和播放进度。当前仅支持前台在线播放，不提供后台、锁屏或离线播放。</p>
+      <p className="dialog-hint">切换服务会停止播放并清除旧曲库、队列和播放进度；每个服务的登录状态单独保存。当前仅支持前 台在线播放，不提供后台、锁屏或离线播放。</p>
       {error && <p className="notice error" role="alert">{error}</p>}
       <div className="dialog-actions">{connected && <button className="button" type="button" onClick={onClose}>取消</button>}<button className="button button-dark" type="submit">保存并连接</button></div>
     </form>

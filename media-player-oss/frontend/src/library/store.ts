@@ -1,5 +1,6 @@
 import { ApiClient, errorMessage, isAbort } from '../api/client';
 import type { ConfigResponse, MetadataChanges, MetadataResponse, Track } from '../api/types';
+import type { TokenStore } from '../platform/auth';
 import { saveOrigin, validateOrigin } from '../platform/connection';
 import type { ConnectionPolicy, StorageLike } from '../platform/connection';
 import { PlayerEngine } from '../player/engine';
@@ -13,12 +14,16 @@ export interface LibrarySnapshot {
   error: string | null;
   notice: string | null;
   pending: ReadonlySet<string>;
+  authenticated: boolean;
+  /** Whether the service has login credentials configured; null until /api/auth/status answers. */
+  authReady: boolean | null;
 }
 
 export interface LibraryOptions {
   native: boolean;
   base: string | null;
   policy: ConnectionPolicy;
+  tokens: TokenStore;
   storage?: StorageLike;
 }
 
@@ -32,15 +37,21 @@ export class LibraryStore {
   private metadataRevision = 0;
   private latestMetadata = new Map<string, { revision: number; entry: MetadataResponse }>();
   private client: ApiClient;
+  private readonly tokens: TokenStore;
+  private readonly releaseTokens: () => void;
 
   constructor(
     readonly player: PlayerEngine,
     private readonly options: LibraryOptions,
-    private readonly makeClient: (base: string) => ApiClient = (base) => new ApiClient(base),
+    private readonly makeClient: (base: string) => ApiClient =
+      (base) => new ApiClient(base, undefined, options.tokens),
   ) {
     this.client = makeClient(options.base || '');
+    this.tokens = options.tokens;
+    this.releaseTokens = this.tokens.subscribe(this.tokenChanged);
     this.snapshot = {
       base: options.base, tracks: [], config: null, loading: false, error: null, notice: null, pending: new Set(),
+      authenticated: this.tokens.token() !== null, authReady: null,
     };
   }
 
@@ -55,7 +66,7 @@ export class LibraryStore {
   }
 
   refresh = async (): Promise<void> => {
-    if (this.snapshot.base === null) return;
+    if (this.snapshot.base === null || !this.snapshot.authenticated) return;
     this.refreshAbort?.abort();
     const abort = new AbortController();
     this.refreshAbort = abort;
@@ -128,11 +139,51 @@ export class LibraryStore {
       this.metadataRevision = 0;
       // Stop and invalidate media before exposing the new service to React.
       this.player.switchService(this.client, base);
-      this.emit({ base, tracks: [], config: null, error: null, notice: null, loading: false, pending: new Set() });
+      // A token only proves anything to the service that signed it; each origin keeps its own.
+      this.tokens.rebind(base);
+      this.emit({
+        base, tracks: [], config: null, error: null, notice: null, loading: false, pending: new Set(),
+        authenticated: this.tokens.token() !== null, authReady: null,
+      });
     }
     void this.refresh();
     return persisted;
   }
+
+  /** Exchange credentials for a token, which makes every client authenticated at once. */
+  async login(username: string, password: string): Promise<void> {
+    const result = await this.client.login({ username, password });
+    this.tokens.save(result.token);
+    await this.refresh();
+  }
+
+  logout = (): void => { this.tokens.clear(); };
+
+  /** Ask whether the service can authenticate anyone at all, so the form can explain a 503. */
+  checkAuthReady = async (): Promise<void> => {
+    if (this.snapshot.base === null) return;
+    try {
+      const status = await this.client.authStatus();
+      this.emit({ authReady: status.auth_ready });
+    } catch (error) {
+      if (!isAbort(error)) this.emit({ authReady: null });
+    }
+  };
+
+  private tokenChanged = (): void => {
+    const authenticated = this.tokens.token() !== null;
+    if (authenticated === this.snapshot.authenticated) return;
+    if (authenticated) {
+      this.emit({ authenticated });
+      return;
+    }
+    // An expired or revoked session must not leave a playable queue or a stale listing behind.
+    this.invalidateRequests();
+    this.player.stop();
+    this.emit({
+      authenticated, tracks: [], config: null, loading: false, error: null, notice: null, pending: new Set(),
+    });
+  };
 
   private invalidateRequests(): void {
     ++this.session;
@@ -144,6 +195,7 @@ export class LibraryStore {
 
   dispose(): void {
     this.invalidateRequests();
+    this.releaseTokens();
     this.listeners.clear();
   }
 }

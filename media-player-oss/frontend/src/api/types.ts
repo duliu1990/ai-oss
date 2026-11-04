@@ -45,3 +45,7 @@ export interface MetadataResponse extends Metadata { key: string }
 export type SortOrder = 'recent' | 'title' | 'artist';
 export type LibraryView = 'all' | 'favorites';
 export type RepeatMode = 'all' | 'one' | 'off';
+
+export interface LoginInput { username: string; password: string }
+export interface LoginResult { token: string; expires_in: number }
+export interface AuthStatus { auth_required: boolean; auth_ready: boolean }

@@ -1,4 +1,6 @@
-import type { CatalogInfo, ConfigResponse, MetadataInput, MetadataResponse, TracksResponse } from './types';
+import type {
+  AuthStatus, CatalogInfo, ConfigResponse, LoginInput, LoginResult, MetadataInput, MetadataResponse, TracksResponse,
+} from './types';
 
 export class ApiError extends Error {
   constructor(message: string, public readonly status = 0) {
@@ -6,6 +8,14 @@ export class ApiError extends Error {
     this.name = 'ApiError';
   }
 }
+
+/** How the client obtains the current token and reports one that the server rejected. */
+export interface AuthPort {
+  token(): string | null;
+  onUnauthorized(): void;
+}
+
+const anonymousAuth: AuthPort = { token: () => null, onUnauthorized: () => {} };
 
 export function isAbort(error: unknown): boolean {
   return error instanceof Error && error.name === 'AbortError';
@@ -49,23 +59,38 @@ export class ApiClient {
     readonly base: string,
     // Native browser fetch rejects an ApiClient receiver; call it on its global owner.
     private readonly fetcher: typeof fetch = (input, init) => globalThis.fetch(input, init),
+    private readonly auth: AuthPort = anonymousAuth,
   ) {}
 
-  streamUrl(key: string): string { return endpoint(this.base, '/api/stream', { key }); }
+  /** <audio> cannot send headers, so the stream carries its token in the query string. */
+  streamUrl(key: string): string {
+    const token = this.auth.token();
+    return endpoint(this.base, '/api/stream', token ? { key, token } : { key });
+  }
 
-  private async request(path: string, init: RequestInit, signal?: AbortSignal): Promise<unknown> {
+  private async request(
+    path: string,
+    init: RequestInit,
+    signal?: AbortSignal,
+    { anonymous = false }: { anonymous?: boolean } = {},
+  ): Promise<unknown> {
     const controller = new AbortController();
     let timedOut = false;
     const abort = () => controller.abort();
     signal?.addEventListener('abort', abort, { once: true });
     if (signal?.aborted) abort();
     const timer = setTimeout(() => { timedOut = true; abort(); }, 20000);
+    const token = anonymous ? null : this.auth.token();
     try {
       const response = await this.fetcher(endpoint(this.base, path), {
-        ...init, signal: controller.signal, credentials: 'omit', cache: 'no-store',
+        ...init,
+        headers: token ? { ...init.headers, Authorization: `Bearer ${token}` } : init.headers,
+        signal: controller.signal, credentials: 'omit', cache: 'no-store',
       });
       const data: unknown = await response.json().catch(() => null);
       if (!response.ok) {
+        // A rejected session must drop the stored token; a rejected password must not.
+        if (response.status === 401 && !anonymous) this.auth.onUnauthorized();
         const detail = record(data) && typeof data.detail === 'string' ? data.detail : `请求失败（${response.status}）`;
         throw new ApiError(detail, response.status);
       }
@@ -79,6 +104,25 @@ export class ApiClient {
       clearTimeout(timer);
       signal?.removeEventListener('abort', abort);
     }
+  }
+
+  async authStatus(signal?: AbortSignal): Promise<AuthStatus> {
+    const value = await this.request('/api/auth/status', {}, signal, { anonymous: true });
+    if (!record(value) || typeof value.auth_required !== 'boolean'
+      || typeof value.auth_ready !== 'boolean') invalidResponse();
+    return value as unknown as AuthStatus;
+  }
+
+  async login(input: LoginInput, signal?: AbortSignal): Promise<LoginResult> {
+    const value = await this.request('/api/auth/login', {
+      method: 'POST',
+      // local_guard rejects any write without this marker, login included.
+      headers: { 'Content-Type': 'application/json', 'X-Player-Client': 'web' },
+      body: JSON.stringify(input),
+    }, signal, { anonymous: true });
+    if (!record(value) || typeof value.token !== 'string' || !value.token
+      || typeof value.expires_in !== 'number') invalidResponse();
+    return value as unknown as LoginResult;
   }
 
   async config(signal?: AbortSignal): Promise<ConfigResponse> {
@@ -128,6 +172,8 @@ export class ApiClient {
         headers: { Range: 'bytes=0-1' }, credentials: 'omit', cache: 'no-store', signal: controller.signal,
       });
       if (!response.ok) {
+        // An expired session surfaces here first when a track fails mid-playback.
+        if (response.status === 401) this.auth.onUnauthorized();
         const data: unknown = await response.json().catch(() => null);
         return record(data) && typeof data.detail === 'string' ? data.detail : `服务返回 ${response.status}`;
       }

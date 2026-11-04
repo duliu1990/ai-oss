@@ -10,13 +10,22 @@ from fastapi.testclient import TestClient
 from pydantic import SecretStr, ValidationError
 
 import app as app_module
+import auth
 import oss_store
 from config import DEV_ORIGIN, ROOT, Settings
-from tests.conftest import FakeBucket
+from tests.conftest import FakeBucket, bearer
 
 WEB = {"X-Player-Client": "web"}
 NATIVE_ORIGINS = ["capacitor://localhost", "https://localhost"]
 ASSET = "/assets/index-Ab12_cd3.js"
+
+
+@pytest.fixture(autouse=True)
+def clear_login_rate_limit():
+    # The failure window is module state shared by every test in the process.
+    auth.reset_rate_limit()
+    yield
+    auth.reset_rate_limit()
 
 
 @pytest.fixture
@@ -61,7 +70,16 @@ def application(bucket, app_settings):
 
 
 @pytest.fixture
-def client(application):
+def client(application, app_settings):
+    # Protected routes are the default, so the shared client is authenticated by construction.
+    with TestClient(
+        application, base_url="http://127.0.0.1:8767", headers=bearer(app_settings)
+    ) as test_client:
+        yield test_client
+
+
+@pytest.fixture
+def anonymous_client(application):
     with TestClient(application, base_url="http://127.0.0.1:8767") as test_client:
         yield test_client
 
@@ -69,7 +87,11 @@ def client(application):
 @pytest.fixture
 def native_client(bucket, app_settings):
     app_settings.allowed_origins = NATIVE_ORIGINS.copy()
-    with TestClient(app_module.create_app(app_settings), base_url="http://127.0.0.1:8767") as test_client:
+    with TestClient(
+        app_module.create_app(app_settings),
+        base_url="http://127.0.0.1:8767",
+        headers=bearer(app_settings),
+    ) as test_client:
         yield test_client
 
 
@@ -336,7 +358,7 @@ def test_native_origins_are_not_enabled_by_default(client, origin):
     [
         ("https://evil.example", "GET", "Range"),
         ("https://localhost", "DELETE", "Content-Type"),
-        ("https://localhost", "PUT", "Authorization"),
+        ("https://localhost", "PUT", "X-Admin-Token"),
     ],
 )
 def test_disallowed_preflights(native_client, origin, method, header):
@@ -382,9 +404,26 @@ def test_host_guard_accepts_valid_ports(native_client, host, method):
     assert response.headers["access-control-allow-origin"] == "https://localhost"
 
 
+@pytest.mark.parametrize(("method", "header"), [("POST", "Authorization"), ("PUT", "Authorization")])
+def test_login_preflight_is_allowed_for_native_origins(native_client, method, header):
+    # Native clients cannot log in unless POST and Authorization survive the preflight.
+    response = native_client.options(
+        "/api/auth/login",
+        headers={
+            "Origin": "capacitor://localhost",
+            "Access-Control-Request-Method": method,
+            "Access-Control-Request-Headers": f"{header}, Content-Type",
+        },
+    )
+    assert response.status_code == 200
+    assert response.headers["access-control-allow-origin"] == "capacitor://localhost"
+
+
 def test_public_host_same_origin_and_forwarded_origin_spoof(bucket, app_settings):
     app_settings.allowed_hosts = ["music.example"]
-    with TestClient(app_module.create_app(app_settings), base_url="https://music.example") as public:
+    with TestClient(
+        app_module.create_app(app_settings), base_url="https://music.example", headers=bearer(app_settings)
+    ) as public:
         headers = {"Origin": "https://music.example", "Sec-Fetch-Site": "same-origin"}
         assert public.get("/api/tracks", headers=headers).status_code == 200
         saved = public.put("/api/tracks/meta", json={"key": "media/a.mp3"}, headers=headers | WEB)
@@ -402,7 +441,11 @@ def test_public_host_same_origin_and_forwarded_origin_spoof(bucket, app_settings
 @pytest.mark.parametrize("enabled", [False, True])
 def test_development_origin_requires_explicit_enablement(bucket, app_settings, enabled):
     app_settings.enable_dev_origin = enabled
-    with TestClient(app_module.create_app(app_settings), base_url="http://127.0.0.1:8767") as dev:
+    with TestClient(
+        app_module.create_app(app_settings),
+        base_url="http://127.0.0.1:8767",
+        headers=bearer(app_settings),
+    ) as dev:
         headers = {"Origin": DEV_ORIGIN}
         assert dev.get("/api/tracks", headers=headers).status_code == (200 if enabled else 403)
         response = dev.put("/api/tracks/meta", json={"key": "media/a.mp3"}, headers=headers | WEB)
@@ -415,13 +458,19 @@ def test_development_origin_requires_explicit_enablement(bucket, app_settings, e
             assert dev.get("/api/tracks", headers={"Origin": origin}).status_code == 403
 
 
-def test_anonymous_native_read_needs_no_origin_or_ticket(client):
+def test_native_read_needs_a_token_but_no_origin_or_cookie(client, anonymous_client):
     response = client.get(
         "/api/stream", params={"key": "media/b.flac"}, headers={"User-Agent": "NativeMedia"}
     )
     assert response.status_code == 200
     assert response.content == b"flac"
     assert "set-cookie" not in response.headers
+    # The same request without a token is rejected; being a native client is not a credential.
+    denied = anonymous_client.get(
+        "/api/stream", params={"key": "media/b.flac"}, headers={"User-Agent": "NativeMedia"}
+    )
+    assert denied.status_code == 401
+    assert denied.content != b"flac"
 
 
 @pytest.mark.parametrize("length", ["4097", "-1", "invalid", "9" * 50])
@@ -453,7 +502,11 @@ def test_health_without_oss_configuration_or_frontend(app_settings, tmp_path, mo
 
     monkeypatch.setattr(oss_store, "get_bucket", unexpected_oss_call)
     monkeypatch.setattr(oss_store, "list_audio", unexpected_oss_call)
-    with TestClient(app_module.create_app(app_settings), base_url="http://127.0.0.1:8767") as offline:
+    with TestClient(
+        app_module.create_app(app_settings),
+        base_url="http://127.0.0.1:8767",
+        headers=bearer(app_settings),
+    ) as offline:
         response = offline.get("/healthz")
         assert response.status_code == 200
         assert response.json() == {"status": "ok"}
@@ -474,7 +527,11 @@ def test_missing_routes_and_assets_never_fall_back_to_spa(client, path):
 
 def test_missing_frontend_is_diagnostic_not_legacy(bucket, app_settings, tmp_path):
     app_settings.frontend_dist = str(tmp_path / "missing-build")
-    with TestClient(app_module.create_app(app_settings), base_url="http://127.0.0.1:8767") as missing:
+    with TestClient(
+        app_module.create_app(app_settings),
+        base_url="http://127.0.0.1:8767",
+        headers=bearer(app_settings),
+    ) as missing:
         response = missing.get("/")
         assert response.status_code == 503
         assert "FRONTEND_DIST" in response.json()["detail"]

@@ -3,6 +3,7 @@ import { ApiClient, ApiError, endpoint } from '../src/api/client';
 import type { ConfigResponse, Track, TracksResponse } from '../src/api/types';
 import { displayArtist, displayTitle, visibleTracks } from '../src/library/metadata';
 import { LibraryStore } from '../src/library/store';
+import { isTokenUsable, readToken, TokenStore, tokenKey } from '../src/platform/auth';
 import { CONNECTION_KEY, initialConnection, validateOrigin } from '../src/platform/connection';
 import type { ConnectionPolicy, StorageLike } from '../src/platform/connection';
 import { PlayerEngine } from '../src/player/engine';
@@ -94,6 +95,14 @@ function listing(tracks = keys.map((key) => track(key))): TracksResponse {
 }
 const json = (value: unknown, status = 200) => new Response(JSON.stringify(value), { status, headers: { 'Content-Type': 'application/json' } });
 const flush = async () => { for (let i = 0; i < 12; i++) await Promise.resolve(); };
+// Only the payload matters to the client: the signature is checked by the service, never here.
+function signedToken(secondsAhead = 3600, claims: Record<string, unknown> = {}): string {
+  const payload = btoa(JSON.stringify({ sub: 'player', exp: Math.floor(Date.now() / 1000) + secondsAhead, ...claims }));
+  return `header.${payload.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')}.signature`;
+}
+function authorize(storage: StorageLike, ...origins: string[]): void {
+  for (const origin of origins) storage.setItem(tokenKey(origin), signedToken());
+}
 function fixture(storage = new MemoryStorage(), native = false, base = '') {
   const audio = new FakeAudio();
   const client = new ApiClient(base, vi.fn<typeof fetch>());
@@ -101,21 +110,24 @@ function fixture(storage = new MemoryStorage(), native = false, base = '') {
   engines.push(player);
   return { audio, client, player, storage };
 }
-function libraryFixture(native = false, base = '') {
+function libraryFixture(native = false, base = '', signedInOrigins = [base, 'https://one.example', 'https://two.example']) {
   const result = fixture(new MemoryStorage(), native, base);
+  // Every data route needs a session; switching tests are signed in on both services.
+  authorize(result.storage, ...signedInOrigins);
+  const tokens = new TokenStore(base, result.storage);
   const clients = new Map<string, ApiClient>();
   const makeClient = (origin: string) => {
     if (!clients.has(origin)) {
-      const client = origin === base ? result.client : new ApiClient(origin, vi.fn<typeof fetch>());
+      const client = origin === base ? result.client : new ApiClient(origin, vi.fn<typeof fetch>(), tokens);
       vi.spyOn(client, 'config').mockResolvedValue({ ...config });
       vi.spyOn(client, 'tracks').mockImplementation(async () => listing());
       clients.set(origin, client);
     }
     return clients.get(origin)!;
   };
-  const store = new LibraryStore(result.player, { native, base, policy: secure, storage: result.storage }, makeClient);
+  const store = new LibraryStore(result.player, { native, base, policy: secure, storage: result.storage, tokens }, makeClient);
   stores.push(store);
-  return { ...result, store, makeClient };
+  return { ...result, store, makeClient, tokens };
 }
 
 afterEach(() => {
@@ -185,10 +197,12 @@ describe('default browser fetch receiver', () => {
     // A Web launch must ignore a native preset and saved server while using the default transport.
     storage.setItem(CONNECTION_KEY, 'https://stored.example');
     const base = initialConnection(false, 'https://preset.example', storage, secure)!;
+    authorize(storage, base);
+    const tokens = new TokenStore(base, storage);
     const audio = new FakeAudio();
-    const player = new PlayerEngine(audio, new ApiClient(base), storage);
+    const player = new PlayerEngine(audio, new ApiClient(base, undefined, tokens), storage);
     engines.push(player);
-    const store = new LibraryStore(player, { native: false, base, policy: secure, storage });
+    const store = new LibraryStore(player, { native: false, base, policy: secure, storage, tokens });
     stores.push(store);
     for (let attempt = 0; attempt < 2; attempt++) {
       await store.refresh();
@@ -749,10 +763,11 @@ describe('service connection and library request isolation', () => {
   it('preserves an unrestored session while OSS configuration is incomplete', async () => {
     const storage = new MemoryStorage();
     storage.setItem(STORE_KEY, JSON.stringify({ lastKey: keys[0], lastTime: 17 }));
+    authorize(storage, '');
     const { player, audio, client } = fixture(storage);
     vi.spyOn(client, 'config').mockResolvedValueOnce({ ...config, oss_ready: false, oss_missing: ['OSS_BUCKET'] }).mockResolvedValue(config);
     vi.spyOn(client, 'tracks').mockResolvedValue(listing());
-    const store = new LibraryStore(player, { native: false, base: '', policy: secure, storage }, () => client);
+    const store = new LibraryStore(player, { native: false, base: '', policy: secure, storage, tokens: new TokenStore('', storage) }, () => client);
     stores.push(store);
     await store.refresh();
     expect(readPreferences(storage).lastTime).toBe(17);
@@ -849,5 +864,146 @@ describe('service connection and library request isolation', () => {
     expect(store.getSnapshot().tracks).toHaveLength(3);
     expect(store.getSnapshot().error).toBe('Offline');
     expect(audio.sourceCount).toBe(1);
+  });
+});
+
+describe('login sessions and token transport', () => {
+  function session(base = '', storage = new MemoryStorage()) {
+    const respond = vi.fn<typeof fetch>();
+    const tokens = new TokenStore(base, storage);
+    return { respond, storage, tokens, client: new ApiClient(base, respond, tokens) };
+  }
+
+  it('accepts only a token that parses and still has headroom', () => {
+    expect(isTokenUsable(signedToken())).toBe(true);
+    expect(isTokenUsable(signedToken(-10))).toBe(false);
+    // A token expiring within the guard window is treated as already gone.
+    expect(isTokenUsable(signedToken(10))).toBe(false);
+    expect(isTokenUsable(signedToken(3600, { exp: 'soon' }))).toBe(false);
+    for (const broken of ['', 'opaque', 'header.payload', 'header.!!!.signature']) {
+      expect(isTokenUsable(broken)).toBe(false);
+    }
+  });
+
+  it('decodes a payload that base64url rewriting has altered', () => {
+    // '?>?>' pushes the encoder into the + and / slots that base64url replaces with - and _.
+    const token = signedToken(3600, { sub: '?>?>' });
+    expect(token).toMatch(/[-_]/);
+    expect(isTokenUsable(token)).toBe(true);
+  });
+
+  it('discards a stale stored token instead of presenting it', () => {
+    const storage = new MemoryStorage();
+    storage.setItem(tokenKey(''), signedToken(-10));
+    expect(readToken('', storage)).toBeNull();
+    expect(storage.getItem(tokenKey(''))).toBeNull();
+  });
+
+  it('keeps one session per service and follows a rebind', () => {
+    const storage = new MemoryStorage();
+    authorize(storage, 'https://one.example');
+    const tokens = new TokenStore('https://one.example', storage);
+    expect(tokens.token()).not.toBeNull();
+    tokens.rebind('https://two.example');
+    expect(tokens.token()).toBeNull();
+    tokens.save(signedToken());
+    // Saving under the new service must leave the first service's session untouched.
+    tokens.rebind('https://one.example');
+    expect(tokens.token()).toBe(storage.getItem(tokenKey('https://one.example')));
+    expect(storage.getItem(tokenKey('https://two.example'))).not.toBeNull();
+  });
+
+  it('sends the token on data calls and withholds it from login and status', async () => {
+    const { client, tokens, respond } = session();
+    tokens.save(signedToken());
+    respond.mockResolvedValue(json(config));
+    await client.config();
+    expect(respond.mock.calls[0][1]).toMatchObject({ headers: { Authorization: `Bearer ${tokens.token()!}` } });
+    respond.mockResolvedValue(json({ auth_required: true, auth_ready: true }));
+    await client.authStatus();
+    // The readiness probe needs no headers at all, so none are attached.
+    expect(respond.mock.calls[1][1]?.headers).toBeUndefined();
+    respond.mockResolvedValue(json({ token: signedToken(), expires_in: 86400 }));
+    await client.login({ username: 'player', password: 'secret' });
+    expect(respond.mock.calls[2][1]).toMatchObject({ method: 'POST', headers: { 'X-Player-Client': 'web' } });
+    expect(respond.mock.calls[2][1]?.headers).not.toHaveProperty('Authorization');
+  });
+
+  it('carries the token in the stream query because audio elements cannot set headers', () => {
+    const { client, tokens } = session('https://music.example');
+    expect(client.streamUrl(keys[0])).toBe(`https://music.example/api/stream?key=${encodeURIComponent(keys[0])}`);
+    tokens.save(signedToken());
+    const url = new URL(client.streamUrl(keys[0]));
+    expect(url.searchParams.get('token')).toBe(tokens.token());
+    expect(url.searchParams.get('key')).toBe(keys[0]);
+  });
+
+  it('drops the session on a rejected request but not on a rejected password', async () => {
+    const { client, tokens, respond } = session();
+    tokens.save(signedToken());
+    respond.mockResolvedValue(json({ detail: '登录凭证无效，请重新登录。' }, 401));
+    await expect(client.config()).rejects.toMatchObject({ status: 401 });
+    expect(tokens.token()).toBeNull();
+    tokens.save(signedToken());
+    await expect(client.login({ username: 'player', password: 'wrong' })).rejects.toMatchObject({ status: 401 });
+    expect(tokens.token()).not.toBeNull();
+    // A mid-playback diagnosis is the other place an expired session surfaces.
+    await client.describeStreamError(keys[0], new AbortController().signal);
+    expect(tokens.token()).toBeNull();
+  });
+
+  it('issues no request at all while signed out', async () => {
+    const { store, client } = libraryFixture(false, '', []);
+    expect(store.getSnapshot().authenticated).toBe(false);
+    await store.refresh();
+    expect(client.config).not.toHaveBeenCalled();
+    expect(store.getSnapshot()).toMatchObject({ tracks: [], loading: false, error: null });
+  });
+
+  it('loads the library as soon as a login succeeds and persists the session', async () => {
+    const { store, client, storage } = libraryFixture(false, '', []);
+    const token = signedToken();
+    vi.spyOn(client, 'login').mockResolvedValue({ token, expires_in: 86400 });
+    await store.login('player', 'secret');
+    expect(store.getSnapshot()).toMatchObject({ authenticated: true, tracks: listing().tracks });
+    expect(storage.getItem(tokenKey(''))).toBe(token);
+  });
+
+  it('reports a service that cannot authenticate anyone', async () => {
+    const { store, client } = libraryFixture(false, '', []);
+    vi.spyOn(client, 'authStatus').mockResolvedValue({ auth_required: true, auth_ready: false });
+    await store.checkAuthReady();
+    expect(store.getSnapshot().authReady).toBe(false);
+  });
+
+  it('logging out stops playback and clears the listing', async () => {
+    const { store, player, audio, storage } = libraryFixture();
+    await store.refresh();
+    player.playFromList(keys[0], keys);
+    store.logout();
+    expect(store.getSnapshot()).toMatchObject({ authenticated: false, tracks: [], config: null, error: null });
+    expect(player.getSnapshot()).toMatchObject({ currentKey: null, playing: false, queue: [] });
+    expect(audio.src).toBe('');
+    expect(storage.getItem(tokenKey(''))).toBeNull();
+  });
+
+  it('an expired session found mid-playback falls back to the login screen', async () => {
+    const { store, player, tokens } = libraryFixture();
+    await store.refresh();
+    player.playFromList(keys[0], keys);
+    tokens.onUnauthorized();
+    expect(store.getSnapshot()).toMatchObject({ authenticated: false, tracks: [] });
+    expect(player.getSnapshot().currentKey).toBeNull();
+  });
+
+  it('switching to a service without a session asks for a login without touching the other one', async () => {
+    const { store } = libraryFixture(true, 'https://one.example', ['https://one.example']);
+    await store.refresh();
+    store.connect('https://two.example');
+    await flush();
+    expect(store.getSnapshot()).toMatchObject({ base: 'https://two.example', authenticated: false, authReady: null, tracks: [] });
+    store.connect('https://one.example');
+    await flush();
+    expect(store.getSnapshot()).toMatchObject({ base: 'https://one.example', authenticated: true, tracks: listing().tracks });
   });
 });

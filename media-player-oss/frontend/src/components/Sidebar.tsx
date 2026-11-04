@@ -9,9 +9,10 @@ interface Props {
   online: boolean;
   onView(view: LibraryView): void;
   onSettings(): void;
+  onLogout(): void;
 }
 
-export function Sidebar({ state, view, native, online, onView, onSettings }: Props) {
+export function Sidebar({ state, view, native, online, onView, onSettings, onLogout }: Props) {
   const config = state.config;
   const status = !online || state.error ? 'error' : config ? config.oss_ready ? '' : 'warn' : 'neutral';
   const label = !online ? '网络已断开' : state.error ? '服务不可用' : state.base === null ? '尚未连接服务'
@@ -32,7 +33,8 @@ export function Sidebar({ state, view, native, online, onView, onSettings }: Pro
     <div className="sidebar-bottom">
       <div className="local-badge" role="status"><span id="oss-dot" className={`status-dot ${status}`} /><span id="oss-label">{label}</span></div>
       <p id="oss-detail">{detail}</p>
-      <small>公开播放 · 曲目信息由服务端保存</small>
+      <small>登录后收听 · 曲目信息由服务端保存</small>
+      <button id="logout" className="connection-link" type="button" onClick={onLogout}>退出登录</button>
       {native && <button id="connection-settings" className="connection-link" type="button" onClick={onSettings}>连接设置</button>}
     </div>
   </aside>;
