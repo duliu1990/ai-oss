@@ -11,6 +11,7 @@ router = APIRouter(prefix="/api", tags=["notes"])
 DEFAULT_NOTES_PREFIX = "my-note/"
 MAX_NOTE_SIZE = 1024 * 1024
 NOTE_CONTENT_TYPE = "text/markdown; charset=utf-8"
+NOTES_FOLDER_CONTENT_TYPE = "application/x-directory"
 
 
 class StrictInput(BaseModel):
@@ -19,7 +20,13 @@ class StrictInput(BaseModel):
 
 class CreateNoteInput(StrictInput):
     name: str = Field(min_length=1, max_length=255)
+    folder: str = Field(default="", max_length=1023)
     content: str = Field(default="", max_length=MAX_NOTE_SIZE * 2)
+
+
+class CreateNoteFolderInput(StrictInput):
+    name: str = Field(min_length=1, max_length=255)
+    folder: str = Field(default="", max_length=1023)
 
 
 class UpdateNoteInput(StrictInput):
@@ -45,7 +52,7 @@ def _notes_store(request: Request):
 def _note_key(key: str, settings: Settings) -> str:
     key = oss_store.ensure_scoped_key(key, settings)
     relative = key[len(oss_store.object_prefix(settings)) :]
-    if "/" in relative or PurePosixPath(relative).suffix.casefold() != ".md":
+    if not relative or PurePosixPath(relative).suffix.casefold() != ".md":
         raise oss_store.UserError("Invalid note key.")
     return key
 
@@ -61,24 +68,32 @@ def _encode_note(content: str) -> bytes:
 
 
 @router.get("/notes")
-def list_notes(request: Request):
-    """List Markdown notes stored directly below the dedicated notes prefix."""
+def list_notes(
+    request: Request,
+    folder: str = Query(default="", max_length=1023),
+):
+    """List one notes folder with its direct child folders and Markdown notes."""
     settings, bucket = _notes_store(request)
-    prefix = oss_store.object_prefix(settings)
-    objects = oss_store.list_directory("", "", settings, bucket=bucket)["files"]
+    current = oss_store.resolve_directory_prefix(folder, settings)
+    listing = oss_store.list_directory(current, "", settings, bucket=bucket)
     notes = [
         {
             "key": obj["key"],
             "name": obj["name"],
-            "folder": prefix,
+            "folder": current,
             "size": obj["size"],
             "last_modified": obj["last_modified"],
         }
-        for obj in objects
+        for obj in listing["files"]
         if obj["name"].lower().endswith(".md")
     ]
     notes.sort(key=lambda note: note["last_modified"], reverse=True)
-    return {"prefix": prefix, "notes": notes}
+    return {
+        "prefix": oss_store.object_prefix(settings),
+        "folder": current,
+        "folders": listing["folders"],
+        "notes": notes,
+    }
 
 
 @router.post("/notes", status_code=201)
@@ -88,7 +103,7 @@ def create_note(data: CreateNoteInput, request: Request):
     if PurePosixPath(name).suffix.casefold() == ".md":
         raise oss_store.UserError("The note name must not include a .md extension.")
     body = _encode_note(data.content)
-    key = oss_store.join_key("", f"{name}.md", settings)
+    key = oss_store.join_key(data.folder, f"{name}.md", settings)
     result = oss_store.put_object_if_absent(
         key,
         body,
@@ -97,6 +112,33 @@ def create_note(data: CreateNoteInput, request: Request):
         bucket=bucket,
     )
     return {"key": key, "etag": result["etag"], "size": len(body)}
+
+
+@router.post("/notes/folder", status_code=201)
+def create_note_folder(data: CreateNoteFolderInput, request: Request):
+    settings, bucket = _notes_store(request)
+    name = oss_store.validate_name(data.name)
+    parent = oss_store.resolve_directory_prefix(data.folder, settings)
+    prefix = oss_store.ensure_scoped_key(f"{parent}{name}/", settings, allow_folder=True)
+    oss_store.put_object(
+        prefix,
+        b"",
+        settings,
+        content_type=NOTES_FOLDER_CONTENT_TYPE,
+        bucket=bucket,
+    )
+    return {"prefix": prefix}
+
+
+@router.delete("/notes/folder")
+def delete_note_folder(
+    request: Request,
+    prefix: str = Query(min_length=1, max_length=1023),
+):
+    settings, bucket = _notes_store(request)
+    folder = oss_store.resolve_directory_prefix(prefix, settings, allow_root=False)
+    deleted = oss_store.delete_folder(folder, settings, bucket=bucket)
+    return {"deleted": deleted}
 
 
 @router.get("/notes/content")

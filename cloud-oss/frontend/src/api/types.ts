@@ -36,8 +36,15 @@ export interface NoteEntry {
   last_modified: string;
 }
 
+export interface NoteFolderEntry {
+  prefix: string;
+  name: string;
+}
+
 export interface NotesResponse {
   prefix: string;
+  folder: string;
+  folders: NoteFolderEntry[];
   notes: NoteEntry[];
 }
 

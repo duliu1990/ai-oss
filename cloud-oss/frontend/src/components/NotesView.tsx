@@ -1,9 +1,9 @@
 import { MDXEditor } from '@mdxeditor/editor';
 import type { MDXEditorMethods } from '@mdxeditor/editor';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ApiClient } from '../api/client';
 import { api, errorMessage } from '../api/client';
-import type { NoteEntry } from '../api/types';
+import type { NoteEntry, NoteFolderEntry } from '../api/types';
 import { useMdxEditor } from '../hooks/useMdxEditor';
 import { useNotes } from '../hooks/useNotes';
 import { createMdxEditorPlugins } from '../mdxEditorPlugins';
@@ -40,9 +40,15 @@ export function NotesView({ client = api }: NotesViewProps) {
   const [createName, setCreateName] = useState('');
   const [createBusy, setCreateBusy] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
+  const [createFolderOpen, setCreateFolderOpen] = useState(false);
+  const [createFolderName, setCreateFolderName] = useState('');
+  const [createFolderBusy, setCreateFolderBusy] = useState(false);
+  const [createFolderError, setCreateFolderError] = useState<string | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<NoteEntry | null>(null);
   const [deleteBusy, setDeleteBusy] = useState(false);
-  const [switchTarget, setSwitchTarget] = useState<string | null>(null);
+  const [deleteFolderTarget, setDeleteFolderTarget] = useState<NoteFolderEntry | null>(null);
+  const [deleteFolderBusy, setDeleteFolderBusy] = useState(false);
+  const [pendingNavigation, setPendingNavigation] = useState<string | null>(null);
   const [renderError, setRenderError] = useState<string | null>(null);
 
   const editorRef = useRef<MDXEditorMethods>(null);
@@ -95,32 +101,57 @@ export function NotesView({ client = api }: NotesViewProps) {
     return () => globalThis.removeEventListener('keydown', handler);
   }, [editor.conflict, editor.dirty, editor.missing, editor.saving, ready, saveCurrent]);
 
-  // Switch notes with dirty guard
+  // Switch notes or folders with dirty guard
+  const applyNoteSelection = useCallback((key: string) => {
+    setSelectedKey(key);
+    setMobileEditing(true);
+  }, []);
+
+  const enterFolder = useCallback((folderPrefix: string) => {
+    setSelectedKey(null);
+    setMobileEditing(false);
+    notesList.navigate(folderPrefix);
+  }, [notesList.navigate]);
+
   const selectNote = useCallback((key: string) => {
     if (key === selectedKey) return;
     if (editor.dirty) {
-      setSwitchTarget(key);
+      setPendingNavigation(key);
       return;
     }
-    setSelectedKey(key);
-    setMobileEditing(true);
-  }, [editor.dirty, selectedKey]);
+    applyNoteSelection(key);
+  }, [applyNoteSelection, editor.dirty, selectedKey]);
 
-  const confirmSwitch = useCallback(() => {
-    if (!switchTarget) return;
-    setSelectedKey(switchTarget);
-    setMobileEditing(true);
-    setSwitchTarget(null);
-  }, [switchTarget]);
+  const openFolder = useCallback((folderPrefix: string) => {
+    if (folderPrefix === notesList.folder) return;
+    if (editor.dirty) {
+      setPendingNavigation(folderPrefix);
+      return;
+    }
+    enterFolder(folderPrefix);
+  }, [editor.dirty, enterFolder, notesList.folder]);
 
-  const cancelSwitch = useCallback(() => {
-    setSwitchTarget(null);
+  const confirmNavigation = useCallback(() => {
+    if (!pendingNavigation) return;
+    if (pendingNavigation === '__back__') {
+      setMobileEditing(false);
+      setSelectedKey(null);
+    } else if (pendingNavigation.endsWith('/')) {
+      enterFolder(pendingNavigation);
+    } else {
+      applyNoteSelection(pendingNavigation);
+    }
+    setPendingNavigation(null);
+  }, [applyNoteSelection, enterFolder, pendingNavigation]);
+
+  const cancelNavigation = useCallback(() => {
+    setPendingNavigation(null);
   }, []);
 
   // Mobile back
   const handleBack = useCallback(() => {
     if (editor.dirty) {
-      setSwitchTarget('__back__');
+      setPendingNavigation('__back__');
       return;
     }
     setMobileEditing(false);
@@ -130,26 +161,43 @@ export function NotesView({ client = api }: NotesViewProps) {
   const confirmBack = useCallback(() => {
     setMobileEditing(false);
     setSelectedKey(null);
-    setSwitchTarget(null);
+    setPendingNavigation(null);
   }, []);
 
-  // Create note
+  // Create note in the current folder
   const submitCreate = async () => {
     const trimmed = createName.trim();
     if (!trimmed) return;
     setCreateBusy(true);
     setCreateError(null);
     try {
-      const result = await client.createNote(trimmed);
+      const result = await client.createNote(trimmed, notesList.folder);
       setCreateOpen(false);
       setCreateName('');
       await notesList.refresh();
-      setSelectedKey(result.key);
-      setMobileEditing(true);
+      applyNoteSelection(result.key);
     } catch (error) {
       setCreateError(errorMessage(error));
     } finally {
       setCreateBusy(false);
+    }
+  };
+
+  // Create folder inside the current folder
+  const submitCreateFolder = async () => {
+    const trimmed = createFolderName.trim();
+    if (!trimmed) return;
+    setCreateFolderBusy(true);
+    setCreateFolderError(null);
+    try {
+      const result = await client.createNoteFolder(notesList.folder, trimmed);
+      setCreateFolderOpen(false);
+      setCreateFolderName('');
+      enterFolder(result.prefix);
+    } catch (error) {
+      setCreateFolderError(errorMessage(error));
+    } finally {
+      setCreateFolderBusy(false);
     }
   };
 
@@ -172,6 +220,21 @@ export function NotesView({ client = api }: NotesViewProps) {
     }
   };
 
+  // Delete folder recursively
+  const submitDeleteFolder = async () => {
+    if (!deleteFolderTarget) return;
+    setDeleteFolderBusy(true);
+    try {
+      await client.deleteNoteFolder(deleteFolderTarget.prefix);
+      setDeleteFolderTarget(null);
+      await notesList.refresh();
+    } catch (error) {
+      void error;
+    } finally {
+      setDeleteFolderBusy(false);
+    }
+  };
+
   // Reload from server
   const reloadFromServer = async () => {
     const markdown = await editor.reloadFromServer();
@@ -190,6 +253,15 @@ export function NotesView({ client = api }: NotesViewProps) {
 
   const selectedNote = notesList.notes.find((n) => n.key === selectedKey);
   const saveStateText = editor.saving ? '保存中...' : editor.dirty ? '有修改' : '已保存';
+  const relativeFolder = notesList.prefix && notesList.folder.startsWith(notesList.prefix)
+    ? notesList.folder.slice(notesList.prefix.length).replace(/\/$/, '')
+    : '';
+  const folderSegments = relativeFolder.split('/').filter(Boolean);
+  const breadcrumbs = folderSegments.map((segment, index) => ({
+    name: segment,
+    prefix: `${notesList.prefix}${folderSegments.slice(0, index + 1).join('/')}/`,
+  }));
+  const folderPathLabel = folderSegments.length ? `${folderSegments.join('/')}/` : '';
 
   return (
     <div className={`notes-view${mobileEditing ? ' notes-mobile-editing' : ''}`}>
@@ -206,10 +278,42 @@ export function NotesView({ client = api }: NotesViewProps) {
               value={notesList.searchQuery}
             />
           </div>
-          <button className="notes-create-btn" onClick={() => { setCreateError(null); setCreateOpen(true); }} type="button">
+          <button className="notes-create-btn" onClick={() => { setCreateError(null); setCreateOpen(true); }} title="新建笔记" type="button">
             <Icon name="plus" size={16} />
           </button>
+          <button
+            className="notes-create-btn notes-folder-btn"
+            onClick={() => { setCreateFolderError(null); setCreateFolderOpen(true); }}
+            title="新建文件夹"
+            type="button"
+          >
+            <Icon name="folder" size={16} />
+          </button>
         </div>
+
+        <nav aria-label="笔记路径" className="notes-breadcrumb">
+          <button
+            className={folderSegments.length === 0 ? 'active' : ''}
+            disabled={folderSegments.length === 0}
+            onClick={() => openFolder(notesList.prefix)}
+            type="button"
+          >
+            全部笔记
+          </button>
+          {breadcrumbs.map((crumb, index) => (
+            <Fragment key={crumb.prefix}>
+              <span aria-hidden="true">/</span>
+              <button
+                className={index === breadcrumbs.length - 1 ? 'active' : ''}
+                disabled={index === breadcrumbs.length - 1}
+                onClick={() => openFolder(crumb.prefix)}
+                type="button"
+              >
+                {crumb.name}
+              </button>
+            </Fragment>
+          ))}
+        </nav>
 
         {notesList.loading && (
           <div className="notes-loading">
@@ -225,15 +329,46 @@ export function NotesView({ client = api }: NotesViewProps) {
           </div>
         )}
 
-        {!notesList.loading && !notesList.error && notesList.filteredNotes.length === 0 && (
+        {!notesList.loading && !notesList.error && notesList.filteredNotes.length === 0
+          && (notesList.searchQuery || notesList.folders.length === 0) && (
           <div className="notes-empty">
-            <Icon name="note" size={40} />
-            <p>{notesList.searchQuery ? '未找到匹配的笔记' : '还没有笔记'}</p>
+            <Icon name={notesList.searchQuery ? 'search' : 'note'} size={40} />
+            <p>
+              {notesList.searchQuery
+                ? '未找到匹配的笔记'
+                : folderSegments.length > 0 ? '此文件夹为空' : '还没有笔记'}
+            </p>
             {!notesList.searchQuery && (
               <button className="notes-empty-create" onClick={() => { setCreateError(null); setCreateOpen(true); }} type="button">
                 新建笔记
               </button>
             )}
+          </div>
+        )}
+
+        {!notesList.searchQuery && notesList.folders.length > 0 && (
+          <div className="notes-folders">
+            {notesList.folders.map((folder) => (
+              <div
+                className="notes-folder-item"
+                key={folder.prefix}
+                onClick={() => openFolder(folder.prefix)}
+                onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') openFolder(folder.prefix); }}
+                role="button"
+                tabIndex={0}
+              >
+                <Icon name="folder" size={16} />
+                <span className="note-folder-name">{folder.name}</span>
+                <button
+                  aria-label={`删除文件夹 ${folder.name}`}
+                  className="folder-delete-btn"
+                  onClick={(event) => { event.stopPropagation(); setDeleteFolderTarget(folder); }}
+                  type="button"
+                >
+                  <Icon name="trash" size={14} />
+                </button>
+              </div>
+            ))}
           </div>
         )}
 
@@ -372,14 +507,14 @@ export function NotesView({ client = api }: NotesViewProps) {
         </div>
       )}
 
-      {/* Switch confirmation */}
+      {/* Navigation confirmation */}
       <ConfirmDialog
         confirmLabel="放弃修改"
         danger
-        message="当前笔记有未保存的修改，切换后修改将丢失。"
-        onClose={cancelSwitch}
-        onConfirm={switchTarget === '__back__' ? confirmBack : confirmSwitch}
-        open={switchTarget !== null}
+        message="当前笔记有未保存的修改，离开后修改将丢失。"
+        onClose={cancelNavigation}
+        onConfirm={pendingNavigation === '__back__' ? confirmBack : confirmNavigation}
+        open={pendingNavigation !== null}
         title="放弃未保存修改？"
       />
 
@@ -395,7 +530,19 @@ export function NotesView({ client = api }: NotesViewProps) {
         title="确认删除笔记？"
       />
 
-      {/* Create dialog */}
+      {/* Delete folder confirmation */}
+      <ConfirmDialog
+        busy={deleteFolderBusy}
+        confirmLabel="永久删除"
+        danger
+        message={`将永久删除文件夹"${deleteFolderTarget?.name ?? ''}"及其中的所有笔记，此操作不可恢复。`}
+        onClose={() => setDeleteFolderTarget(null)}
+        onConfirm={() => void submitDeleteFolder()}
+        open={deleteFolderTarget !== null}
+        title="确认删除文件夹？"
+      />
+
+      {/* Create note dialog */}
       {createOpen && (
         <div className="modal-backdrop" onMouseDown={createBusy ? undefined : () => setCreateOpen(false)} role="presentation">
           <form
@@ -416,14 +563,49 @@ export function NotesView({ client = api }: NotesViewProps) {
               />
             </label>
             <div className="filename-preview">
-              <span>FILENAME</span>
-              <strong>{createName.trim() || '笔记名称'}.md</strong>
+              <span>保存位置</span>
+              <strong>{folderPathLabel}{createName.trim() || '笔记名称'}.md</strong>
             </div>
             {createError && <p className="dialog-error">{createError}</p>}
             <div className="dialog-actions">
               <button disabled={createBusy} onClick={() => setCreateOpen(false)} type="button">取消</button>
               <button className="solid-button" disabled={createBusy || !createName.trim()} type="submit">
                 {createBusy ? '创建中…' : '创建笔记'}
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {/* Create folder dialog */}
+      {createFolderOpen && (
+        <div className="modal-backdrop" onMouseDown={createFolderBusy ? undefined : () => setCreateFolderOpen(false)} role="presentation">
+          <form
+            className="dialog form-dialog"
+            onMouseDown={(event) => event.stopPropagation()}
+            onSubmit={(event) => { event.preventDefault(); void submitCreateFolder(); }}
+          >
+            <span className="eyebrow">NEW FOLDER</span>
+            <h2>新建文件夹</h2>
+            <label>
+              文件夹名称
+              <input
+                autoFocus
+                maxLength={200}
+                onChange={(event) => setCreateFolderName(event.target.value)}
+                placeholder="例如：工作"
+                value={createFolderName}
+              />
+            </label>
+            <div className="filename-preview">
+              <span>保存位置</span>
+              <strong>{folderPathLabel}{createFolderName.trim() || '文件夹名称'}/</strong>
+            </div>
+            {createFolderError && <p className="dialog-error">{createFolderError}</p>}
+            <div className="dialog-actions">
+              <button disabled={createFolderBusy} onClick={() => setCreateFolderOpen(false)} type="button">取消</button>
+              <button className="solid-button" disabled={createFolderBusy || !createFolderName.trim()} type="submit">
+                {createFolderBusy ? '创建中…' : '创建文件夹'}
               </button>
             </div>
           </form>

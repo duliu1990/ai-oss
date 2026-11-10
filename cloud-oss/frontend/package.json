@@ -13,9 +13,16 @@
     "build": "npm run typecheck && vite build",
     "preview": "vite preview --host 127.0.0.1",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "native:build": "npm run typecheck && vite build --mode native",
+    "ios:sync": "cap sync ios",
+    "ios:prepare": "npm run native:build && npm run ios:sync",
+    "ios:open": "cap open ios",
+    "ios:simulator": "npm run ios:prepare && node scripts/ios-simulator.mjs"
   },
   "dependencies": {
+    "@capacitor/core": "8.5.3",
+    "@capacitor/ios": "8.5.3",
     "@mdxeditor/editor": "4.3.3",
     "docx-preview": "^0.4.1",
     "dompurify": "^3.4.17",
@@ -27,6 +34,7 @@
     "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz"
   },
   "devDependencies": {
+    "@capacitor/cli": "8.5.3",
     "@types/react": "19.3.0",
     "@types/react-dom": "19.3.0",
     "@vitejs/plugin-react": "6.1.2",

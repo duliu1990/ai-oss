@@ -8,6 +8,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import ValidationError
+from starlette.middleware.cors import CORSMiddleware
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 import oss_store
@@ -122,7 +123,12 @@ async def request_boundary(request: Request, call_next):
 async def security_headers(request: Request, call_next):
     response = await call_next(request)
     allow_same_origin_frame = request.url.path == "/api/files/download"
-    frame_ancestors = "'self'" if allow_same_origin_frame else "'none'"
+    # Native clients embed PDF previews from their own origin; WebKit lets frame-ancestors override XFO.
+    frame_ancestors = (
+        " ".join(["'self'", *request.app.state.settings.cors_origins])
+        if allow_same_origin_frame
+        else "'none'"
+    )
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "SAMEORIGIN" if allow_same_origin_frame else "DENY"
     response.headers["Referrer-Policy"] = "no-referrer"
@@ -285,8 +291,17 @@ def create_app(app_settings: Settings | None = None) -> FastAPI:
     application.add_exception_handler(Exception, internal_error)
 
     application.add_middleware(TextJsonBodyLimitMiddleware, max_body_size=MAX_TEXT_JSON_BODY_SIZE)
-    # The last middleware added runs first: security headers wrap the request boundary.
+    # The last middleware added runs first: security headers -> CORS -> request boundary,
+    # so unexpected errors still carry CORS headers for the native client.
     application.middleware("http")(request_boundary)
+    application.add_middleware(
+        CORSMiddleware,
+        allow_origins=configured.cors_origins,
+        allow_credentials=False,
+        allow_methods=["GET", "HEAD", "POST", "PUT", "DELETE"],
+        allow_headers=["Authorization", "Content-Type", "Range"],
+        expose_headers=["Accept-Ranges", "Content-Range", "Content-Length"],
+    )
     application.middleware("http")(security_headers)
     return application
 

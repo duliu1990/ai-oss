@@ -1,35 +1,43 @@
 import react from '@vitejs/plugin-react';
 import { defineConfig } from 'vitest/config';
 
-export default defineConfig({
-  plugins: [react()],
-  base: '/',
-  server: {
-    host: '127.0.0.1',
-    port: 5173,
-    strictPort: true,
-    proxy: {
-      '/api': {
-        target: 'http://127.0.0.1:8700',
-        changeOrigin: true,
+const BACKEND_ORIGIN = 'http://127.0.0.1:8700';
+
+// `--mode native` builds the Capacitor bundle: it loads from capacitor://localhost, so API calls
+// must target the backend origin. The iOS simulator shares the host loopback interface.
+export default defineConfig(({ mode }) => {
+  const native = mode === 'native';
+  return {
+    plugins: [react()],
+    base: '/',
+    define: native ? { 'import.meta.env.VITE_API_BASE': JSON.stringify(BACKEND_ORIGIN) } : {},
+    server: {
+      host: '127.0.0.1',
+      port: 5173,
+      strictPort: true,
+      proxy: {
+        '/api': {
+          target: BACKEND_ORIGIN,
+          changeOrigin: true,
+        },
       },
     },
-  },
-  build: {
-    outDir: 'dist',
-    assetsDir: 'assets',
-    target: ['es2022', 'safari15'],
-    rollupOptions: {
-      input: {
-        main: 'index.html',
-        preview: 'preview.html',
+    build: {
+      outDir: native ? 'dist-native' : 'dist',
+      assetsDir: 'assets',
+      target: ['es2022', 'safari15'],
+      rollupOptions: {
+        input: {
+          main: 'index.html',
+          preview: 'preview.html',
+        },
       },
     },
-  },
-  test: {
-    environment: 'jsdom',
-    include: ['tests/**/*.test.ts'],
-    clearMocks: true,
-    css: { include: [/\/src\/style\.css/] },
-  },
+    test: {
+      environment: 'jsdom',
+      include: ['tests/**/*.test.ts'],
+      clearMocks: true,
+      css: { include: [/\/src\/style\.css/] },
+    },
+  };
 });

@@ -1,4 +1,5 @@
 import { useState, useCallback, useEffect } from 'react';
+import { API_BASE } from '../api/base';
 import type { LoginRequest, LoginResponse } from '../api/types';
 
 const TOKEN_KEY = 'cloud_oss_token';
@@ -38,7 +39,7 @@ export function useAuth() {
 
   const login = useCallback(async (username: string, password: string): Promise<void> => {
     const request: LoginRequest = { username, password };
-    const res = await fetch('/api/auth/login', {
+    const res = await fetch(`${API_BASE}/api/auth/login`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(request),

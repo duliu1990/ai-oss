@@ -26,6 +26,8 @@ class Settings(BaseSettings):
     jwt_secret_key: SecretStr = SecretStr("")
     jwt_expire_minutes: int = 1440  # 24 hours
     port: int = Field(default=8700, ge=1, le=65535)
+    # Capacitor iOS serves the bundled frontend from this origin; set CORS_ORIGINS='[]' to disable.
+    cors_origins: list[str] = ["capacitor://localhost"]
 
     @field_validator("oss_endpoint")
     @classmethod

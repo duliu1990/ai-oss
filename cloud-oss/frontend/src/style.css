@@ -777,6 +777,75 @@ svg { display: block; }
 }
 .notes-create-btn:hover { border-color: var(--green); background: var(--blue-soft); color: var(--green); }
 
+.notes-breadcrumb {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  padding: 0 14px 10px;
+  overflow-x: auto;
+  white-space: nowrap;
+  scrollbar-width: none;
+  font-size: 11px;
+  color: var(--muted);
+}
+.notes-breadcrumb::-webkit-scrollbar { display: none; }
+.notes-breadcrumb button {
+  padding: 2px 4px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 11px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: color .15s, background .15s;
+}
+.notes-breadcrumb button:not(:disabled):hover { color: var(--green); background: var(--blue-soft); }
+.notes-breadcrumb button.active { color: var(--ink); font-weight: 600; cursor: default; }
+.notes-breadcrumb button:disabled { opacity: 1; }
+
+.notes-folders { flex: none; display: flex; flex-direction: column; }
+.notes-folder-item {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--line);
+  background: transparent;
+  color: var(--green);
+  cursor: pointer;
+  transition: background .15s;
+}
+.notes-folder-item:hover { background: rgb(175 231 206 / 10%); }
+.note-folder-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  font-weight: 560;
+  color: var(--ink);
+}
+.folder-delete-btn {
+  width: 28px;
+  height: 28px;
+  flex: none;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity .15s, color .15s, background .15s;
+}
+.notes-folder-item:hover .folder-delete-btn { opacity: 1; }
+.folder-delete-btn:hover { color: var(--orange); background: #fdf1f0; }
+
 .notes-list {
   flex: 1;
   min-height: 0;
@@ -1049,7 +1118,7 @@ svg { display: block; }
   .notes-back-btn:hover { background: var(--blue-soft); }
 }
 
-@media (hover: none) { .note-delete-btn { opacity: 0.7; } }
+@media (hover: none) { .note-delete-btn, .folder-delete-btn { opacity: 0.7; } }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
 }

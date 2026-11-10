@@ -28,6 +28,38 @@ def test_config_exposes_only_public_values(client):
     assert "test-id" not in serialized
 
 
+def test_cors_allows_capacitor_preflight(client):
+    response = client.options(
+        "/api/files",
+        headers={
+            "Origin": "capacitor://localhost",
+            "Access-Control-Request-Method": "GET",
+            "Access-Control-Request-Headers": "authorization",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.headers["access-control-allow-origin"] == "capacitor://localhost"
+    assert "authorization" in response.headers["access-control-allow-headers"].casefold()
+    assert "access-control-allow-credentials" not in response.headers
+
+
+def test_cors_rejects_unknown_origin(client):
+    response = client.get("/api/config", headers={"Origin": "https://evil.example"})
+
+    assert response.status_code == 200
+    assert "access-control-allow-origin" not in response.headers
+
+
+def test_download_frame_ancestors_include_native_origin(client, fake_bucket):
+    fake_bucket.objects["drive/doc.pdf"] = b"%PDF-1.7"
+
+    response = client.get("/api/files/download", params={"key": "drive/doc.pdf"})
+
+    assert "frame-ancestors 'self' capacitor://localhost;" in response.headers["content-security-policy"]
+    assert "frame-ancestors 'none'" in client.get("/api/config").headers["content-security-policy"]
+
+
 def test_regular_api_denies_framing(client):
     response = client.get("/api/config")
 
@@ -759,10 +791,15 @@ def test_notes_missing_directory_returns_configured_prefix(client, fake_bucket):
     response = client.get("/api/notes")
 
     assert response.status_code == 200
-    assert response.json() == {"prefix": "notes/", "notes": []}
+    assert response.json() == {
+        "prefix": "notes/",
+        "folder": "notes/",
+        "folders": [],
+        "notes": [],
+    }
 
 
-def test_notes_returns_only_top_level_markdown_files_in_configured_prefix(client, fake_bucket):
+def test_notes_returns_top_level_markdown_files_and_folders(client, fake_bucket):
     fake_bucket.objects.update(
         {
             "notes/note.MD": b"hello",
@@ -778,6 +815,8 @@ def test_notes_returns_only_top_level_markdown_files_in_configured_prefix(client
     assert response.status_code == 200
     assert response.json() == {
         "prefix": "notes/",
+        "folder": "notes/",
+        "folders": [{"prefix": "notes/archive/", "name": "archive"}],
         "notes": [
             {
                 "key": "notes/note.MD",
@@ -788,6 +827,24 @@ def test_notes_returns_only_top_level_markdown_files_in_configured_prefix(client
             }
         ],
     }
+
+
+def test_notes_lists_a_nested_folder(client, fake_bucket):
+    fake_bucket.objects.update(
+        {
+            "notes/work/plan.md": b"# Plan",
+            "notes/work/weekly/review.md": b"# Review",
+            "notes/root.md": b"root",
+        }
+    )
+
+    response = client.get("/api/notes", params={"folder": "notes/work/"})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["folder"] == "notes/work/"
+    assert payload["folders"] == [{"prefix": "notes/work/weekly/", "name": "weekly"}]
+    assert [note["key"] for note in payload["notes"]] == ["notes/work/plan.md"]
 
 
 def test_notes_sorted_by_last_modified_descending(client, fake_bucket):
@@ -844,16 +901,90 @@ def test_notes_create_read_save_and_delete_in_configured_prefix(client, fake_buc
     assert "notes/work.md" not in fake_bucket.objects
 
 
-def test_note_operations_reject_file_prefix_and_nested_keys(client, fake_bucket):
+def test_note_operations_reject_keys_outside_notes_prefix(client, fake_bucket):
     fake_bucket.objects["drive/file.md"] = b"file"
-    fake_bucket.objects["notes/nested/note.md"] = b"nested"
 
     outside = client.get("/api/notes/content", params={"key": "drive/file.md"})
-    nested = client.delete("/api/notes", params={"key": "notes/nested/note.md"})
+    escape = client.delete("/api/notes", params={"key": "notes/../escape.md"})
 
     assert outside.status_code == 400
-    assert nested.status_code == 400
-    assert "notes/nested/note.md" in fake_bucket.objects
+    assert escape.status_code == 400
+    assert fake_bucket.objects["drive/file.md"] == b"file"
+
+
+def test_notes_create_folder_and_store_note_inside(client, fake_bucket):
+    folder = client.post("/api/notes/folder", json={"name": "work"})
+
+    assert folder.status_code == 201
+    assert folder.json() == {"prefix": "notes/work/"}
+    assert fake_bucket.objects["notes/work/"] == b""
+    assert fake_bucket.object_headers["notes/work/"]["Content-Type"] == "application/x-directory"
+
+    created = client.post(
+        "/api/notes",
+        json={"name": "plan", "folder": "notes/work/", "content": "# Plan"},
+    )
+
+    assert created.status_code == 201
+    assert created.json()["key"] == "notes/work/plan.md"
+    assert fake_bucket.objects["notes/work/plan.md"] == b"# Plan"
+
+    root = client.get("/api/notes").json()
+    assert root["folders"] == [{"prefix": "notes/work/", "name": "work"}]
+    assert root["notes"] == []
+
+    nested = client.get("/api/notes", params={"folder": "notes/work/"}).json()
+    assert [note["key"] for note in nested["notes"]] == ["notes/work/plan.md"]
+
+
+def test_notes_nested_note_can_be_read_saved_and_deleted(client, fake_bucket):
+    fake_bucket.objects["notes/work/plan.md"] = b"first"
+
+    read = client.get("/api/notes/content", params={"key": "notes/work/plan.md"})
+    assert read.status_code == 200
+    assert read.json()["content"] == "first"
+
+    saved = client.put(
+        "/api/notes",
+        json={
+            "key": "notes/work/plan.md",
+            "content": "updated",
+            "expected_etag": read.json()["etag"],
+        },
+    )
+    assert saved.status_code == 200
+    assert fake_bucket.objects["notes/work/plan.md"] == b"updated"
+
+    deleted = client.delete("/api/notes", params={"key": "notes/work/plan.md"})
+    assert deleted.status_code == 200
+    assert "notes/work/plan.md" not in fake_bucket.objects
+
+
+def test_notes_delete_folder_recursively(client, fake_bucket):
+    fake_bucket.objects.update(
+        {
+            "notes/": b"",
+            "notes/work/": b"",
+            "notes/work/plan.md": b"plan",
+            "notes/work/weekly/review.md": b"review",
+            "notes/keep.md": b"keep",
+        }
+    )
+
+    response = client.delete("/api/notes/folder", params={"prefix": "notes/work/"})
+
+    assert response.status_code == 200
+    assert response.json() == {"deleted": 3}
+    assert fake_bucket.objects == {"notes/": b"", "notes/keep.md": b"keep"}
+
+
+def test_notes_cannot_delete_the_notes_root(client, fake_bucket):
+    fake_bucket.objects["notes/keep.md"] = b"keep"
+
+    response = client.delete("/api/notes/folder", params={"prefix": "notes/"})
+
+    assert response.status_code == 400
+    assert fake_bucket.objects["notes/keep.md"] == b"keep"
 
 
 def test_notes_derive_prefix_when_note_prefix_is_empty(fake_bucket):
@@ -872,7 +1003,12 @@ def test_notes_derive_prefix_when_note_prefix_is_empty(fake_bucket):
         response = fallback_client.get("/api/notes")
         created = fallback_client.post("/api/notes", json={"name": "fallback"})
 
-    assert response.json() == {"prefix": "drive-note/", "notes": []}
+    assert response.json() == {
+        "prefix": "drive-note/",
+        "folder": "drive-note/",
+        "folders": [],
+        "notes": [],
+    }
     assert created.status_code == 201
     assert created.json()["key"] == "drive-note/fallback.md"
 
@@ -892,6 +1028,11 @@ def test_notes_use_legacy_fallback_when_oss_prefix_is_empty(fake_bucket):
         response = no_prefix_client.get("/api/notes")
         created = no_prefix_client.post("/api/notes", json={"name": "fallback"})
 
-    assert response.json() == {"prefix": "my-note/", "notes": []}
+    assert response.json() == {
+        "prefix": "my-note/",
+        "folder": "my-note/",
+        "folders": [],
+        "notes": [],
+    }
     assert created.status_code == 201
     assert created.json()["key"] == "my-note/fallback.md"

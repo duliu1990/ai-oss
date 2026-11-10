@@ -19,6 +19,7 @@ import type {
   UploadResponse,
 } from './types';
 import { clearAuthToken, getAuthToken } from '../hooks/useAuth';
+import { API_BASE } from './base';
 
 const REQUEST_TIMEOUT = 20_000;
 const UPLOAD_TIMEOUT = 5 * 60_000;
@@ -178,26 +179,52 @@ export class ApiClient {
     return value as unknown as SearchResponse;
   }
 
-  async notes(signal?: AbortSignal): Promise<NotesResponse> {
-    const value = await this.request('/api/notes', {}, signal);
+  async notes(folder = '', signal?: AbortSignal): Promise<NotesResponse> {
+    const query = folder ? `?${new URLSearchParams({ folder }).toString()}` : '';
+    const value = await this.request(`/api/notes${query}`, {}, signal);
     if (!isRecord(value)
       || typeof value.prefix !== 'string'
+      || typeof value.folder !== 'string'
+      || !Array.isArray(value.folders)
+      || !value.folders.every((entry) => isRecord(entry)
+        && typeof entry.prefix === 'string'
+        && typeof entry.name === 'string')
       || !Array.isArray(value.notes)
       || !value.notes.every(isNote)) invalidResponse();
     return value as unknown as NotesResponse;
   }
 
-  async createNote(name: string, content = '', signal?: AbortSignal): Promise<FileWriteResponse> {
+  async createNote(name: string, folder = '', content = '', signal?: AbortSignal): Promise<FileWriteResponse> {
     const value = await this.request('/api/notes', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name, content }),
+      body: JSON.stringify({ name, folder, content }),
     }, signal);
     if (!isRecord(value)
       || typeof value.key !== 'string'
       || typeof value.etag !== 'string'
       || !isFiniteNumber(value.size)) invalidResponse();
     return value as unknown as FileWriteResponse;
+  }
+
+  async createNoteFolder(folder: string, name: string, signal?: AbortSignal): Promise<FolderResponse> {
+    const value = await this.request('/api/notes/folder', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ folder, name }),
+    }, signal);
+    if (!isRecord(value) || typeof value.prefix !== 'string') invalidResponse();
+    return value as unknown as FolderResponse;
+  }
+
+  async deleteNoteFolder(prefix: string, signal?: AbortSignal): Promise<DeleteFolderResponse> {
+    const value = await this.request(
+      `/api/notes/folder?${new URLSearchParams({ prefix }).toString()}`,
+      { method: 'DELETE' },
+      signal,
+    );
+    if (!isRecord(value) || !isFiniteNumber(value.deleted)) invalidResponse();
+    return value as unknown as DeleteFolderResponse;
   }
 
   async readNote(key: string, signal?: AbortSignal): Promise<EditableFileResponse> {
@@ -400,4 +427,4 @@ export class ApiClient {
   }
 }
 
-export const api = new ApiClient('');
+export const api = new ApiClient(API_BASE);

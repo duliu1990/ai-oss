@@ -102,7 +102,7 @@ vi.mock('@mdxeditor/editor', async () => {
 });
 
 import { api, ApiClient, ApiError } from '../src/api/client';
-import type { NoteEntry } from '../src/api/types';
+import type { NoteEntry, NotesResponse } from '../src/api/types';
 import { NotesView, formatRelativeTime } from '../src/components/NotesView';
 import App from '../src/App';
 import editorStyles from '../src/style.css?raw';
@@ -112,15 +112,19 @@ const json = (value: unknown, status = 200) => new Response(JSON.stringify(value
   headers: { 'Content-Type': 'application/json' },
 });
 
-function makeNote(name: string, minutesAgo = 5): NoteEntry {
+function makeNote(name: string, minutesAgo = 5, folder = 'drive-note/'): NoteEntry {
   const d = new Date(Date.now() - minutesAgo * 60_000);
   return {
-    key: `drive-note/${name}`,
+    key: `${folder}${name}`,
     name,
-    folder: 'drive-note/',
+    folder,
     size: 100,
     last_modified: d.toISOString(),
   };
+}
+
+function makeNotesResponse(notes: NoteEntry[] = [], folders: NotesResponse['folders'] = [], folder = 'drive-note/'): NotesResponse {
+  return { prefix: 'drive-note/', folder, folders, notes };
 }
 
 let root: Root | null = null;
@@ -187,13 +191,22 @@ describe('formatRelativeTime', () => {
 describe('notes API client', () => {
   it('calls GET /api/notes and validates the response', async () => {
     const notes: NoteEntry[] = [makeNote('hello.md'), makeNote('second.md')];
-    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(json({ prefix: 'drive-note/', notes }));
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(json(makeNotesResponse(notes)));
     const client = new ApiClient('', fetcher);
     const result = await client.notes();
     expect(result.prefix).toBe('drive-note/');
+    expect(result.folder).toBe('drive-note/');
     expect(result.notes).toHaveLength(2);
     expect(result.notes[0].name).toBe('hello.md');
     expect(String(fetcher.mock.calls[0][0])).toBe('/api/notes');
+  });
+
+  it('requests a nested notes folder', async () => {
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(json(makeNotesResponse([], [], 'drive-note/work/')));
+    const client = new ApiClient('', fetcher);
+    const result = await client.notes('drive-note/work/');
+    expect(result.folder).toBe('drive-note/work/');
+    expect(String(fetcher.mock.calls[0][0])).toBe('/api/notes?folder=drive-note%2Fwork%2F');
   });
 
   it('rejects malformed notes responses', async () => {
@@ -205,7 +218,7 @@ describe('notes API client', () => {
 
 describe('NotesView', () => {
   function mockNotesList(client: ApiClient, notes: NoteEntry[] = []) {
-    return vi.spyOn(client, 'notes').mockResolvedValue({ prefix: 'drive-note/', notes });
+    return vi.spyOn(client, 'notes').mockResolvedValue(makeNotesResponse(notes));
   }
 
   it('shows loading state then renders notes list', async () => {
@@ -333,7 +346,7 @@ describe('NotesView', () => {
     expect(host.querySelector('.filename-preview')?.textContent).toContain('读书笔记.md');
 
     // Now mock the refresh to return the newly created note
-    notesCall.mockResolvedValue({ prefix: 'drive-note/', notes: [makeNote('读书笔记.md')] });
+    notesCall.mockResolvedValue(makeNotesResponse([makeNote('读书笔记.md')]));
     vi.spyOn(client, 'readNote').mockResolvedValue({
       key: 'drive-note/读书笔记.md',
       content: '',
@@ -344,7 +357,114 @@ describe('NotesView', () => {
 
     await click(host.querySelector<HTMLButtonElement>('.form-dialog button[type="submit"]'));
     await settle();
-    expect(createNote).toHaveBeenCalledWith('读书笔记');
+    expect(createNote).toHaveBeenCalledWith('读书笔记', 'drive-note/');
+  });
+
+  it('lists note folders and opens a folder', async () => {
+    const client = new ApiClient('');
+    const notes = vi.spyOn(client, 'notes').mockResolvedValue(makeNotesResponse(
+      [makeNote('root.md')],
+      [{ prefix: 'drive-note/work/', name: 'work' }],
+    ));
+    const host = await render(createElement(NotesView, { client }));
+    await settle();
+
+    expect(host.querySelectorAll('.notes-folder-item')).toHaveLength(1);
+    expect(host.querySelector('.note-folder-name')?.textContent).toBe('work');
+
+    notes.mockResolvedValue(makeNotesResponse(
+      [makeNote('plan.md', 5, 'drive-note/work/')],
+      [],
+      'drive-note/work/',
+    ));
+    await act(async () => {
+      host.querySelector<HTMLElement>('.notes-folder-item')!.click();
+      await Promise.resolve();
+    });
+    await settle();
+
+    expect(notes.mock.calls.at(-1)?.[0]).toBe('drive-note/work/');
+    expect(host.querySelector('.notes-breadcrumb')?.textContent).toContain('work');
+    expect(host.querySelectorAll('.notes-list-item')).toHaveLength(1);
+    expect(host.querySelector('.note-name')?.textContent).toBe('plan');
+  });
+
+  it('creates a note in the current folder', async () => {
+    const client = new ApiClient('');
+    vi.spyOn(client, 'notes').mockResolvedValue(makeNotesResponse([], [], 'drive-note/work/'));
+    const createNote = vi.spyOn(client, 'createNote').mockResolvedValue({
+      key: 'drive-note/work/plan.md',
+      etag: 'etag-new',
+      size: 0,
+    });
+    vi.spyOn(client, 'readNote').mockResolvedValue({
+      key: 'drive-note/work/plan.md',
+      content: '',
+      etag: 'etag-new',
+      size: 0,
+      content_type: 'text/markdown',
+    });
+    const host = await render(createElement(NotesView, { client }));
+    await settle();
+
+    await click(host.querySelector<HTMLButtonElement>('.notes-create-btn'));
+    const input = host.querySelector<HTMLInputElement>('.form-dialog input')!;
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+      setter?.call(input, 'plan');
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    expect(host.querySelector('.filename-preview')?.textContent).toContain('work/plan.md');
+
+    await click(host.querySelector<HTMLButtonElement>('.form-dialog button[type="submit"]'));
+    await settle();
+    expect(createNote).toHaveBeenCalledWith('plan', 'drive-note/work/');
+  });
+
+  it('opens the create folder dialog and creates a folder', async () => {
+    const client = new ApiClient('');
+    const notes = mockNotesList(client, []);
+    const createFolder = vi.spyOn(client, 'createNoteFolder').mockResolvedValue({ prefix: 'drive-note/工作/' });
+    const host = await render(createElement(NotesView, { client }));
+    await settle();
+
+    await click(host.querySelector<HTMLButtonElement>('.notes-folder-btn'));
+    expect(host.textContent).toContain('新建文件夹');
+
+    const input = host.querySelector<HTMLInputElement>('.form-dialog input')!;
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+      setter?.call(input, '工作');
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    expect(host.querySelector('.filename-preview')?.textContent).toContain('工作/');
+
+    notes.mockResolvedValue(makeNotesResponse([], [], 'drive-note/工作/'));
+    await click(host.querySelector<HTMLButtonElement>('.form-dialog button[type="submit"]'));
+    await settle();
+    expect(createFolder).toHaveBeenCalledWith('drive-note/', '工作');
+    expect(host.querySelector('.notes-breadcrumb')?.textContent).toContain('工作');
+  });
+
+  it('deletes a folder after confirmation', async () => {
+    const client = new ApiClient('');
+    const notes = vi.spyOn(client, 'notes').mockResolvedValue(makeNotesResponse(
+      [],
+      [{ prefix: 'drive-note/archive/', name: 'archive' }],
+    ));
+    const deleteFolder = vi.spyOn(client, 'deleteNoteFolder').mockResolvedValue({ deleted: 3 });
+    const host = await render(createElement(NotesView, { client }));
+    await settle();
+
+    await click(host.querySelector<HTMLButtonElement>('.folder-delete-btn'));
+    expect(host.textContent).toContain('确认删除文件夹');
+
+    notes.mockResolvedValue(makeNotesResponse());
+    await click(Array.from(host.querySelectorAll<HTMLButtonElement>('.dialog-actions button')).find(
+      (button) => button.textContent?.includes('永久删除'),
+    ));
+    await settle();
+    expect(deleteFolder).toHaveBeenCalledWith('drive-note/archive/');
   });
 
   it('shows a delete confirmation and deletes a note', async () => {
@@ -421,7 +541,7 @@ describe('App view switching', () => {
   it('switches between files and notes sections', async () => {
     vi.spyOn(api, 'config').mockResolvedValue({ bucket: 'bucket', prefix: '', port: 8700 });
     vi.spyOn(api, 'files').mockResolvedValue({ files: [], folders: [], next_marker: null, truncated: false });
-    vi.spyOn(api, 'notes').mockResolvedValue({ prefix: 'drive-note/', notes: [] });
+    vi.spyOn(api, 'notes').mockResolvedValue(makeNotesResponse());
 
     const host = await render(createElement(App));
     await settle();
