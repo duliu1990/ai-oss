@@ -4,7 +4,7 @@ import { errorMessage, isAbort } from '../api/client';
 import { browserStorage, platform, storedOrigin } from '../platform/connection';
 import { useLibrary, useRuntime } from '../player/context';
 import { ConnectionDialog } from './Dialogs';
-import { Icon } from './Icon';
+import appLogo from '../assets/app-logo.png';
 
 export function LoginScreen() {
   const { library, native } = useRuntime();
@@ -38,7 +38,7 @@ export function LoginScreen() {
   return <>
     <main className="login-shell" id="login">
       <form className="login-card" onSubmit={(event) => { void submit(event); }}>
-        <div className="login-brand"><span className="brand-mark" aria-hidden="true"><Icon name="note" /></span><span>轻听<small>OSS PLAYER</small></span></div>
+        <div className="login-brand"><span className="brand-mark" aria-hidden="true"><img src={appLogo} alt="" width={43} height={43} /></span><span>轻听<small>OSS PLAYER</small></span></div>
         <h1 className="login-title">登录后收听你的私有曲库</h1>
         <p className="login-hint">账号由服务维护者在服务端配置，这里没有注册入口。</p>
         <label className="field">账号

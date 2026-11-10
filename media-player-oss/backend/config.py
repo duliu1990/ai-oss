@@ -22,7 +22,7 @@ class Settings(BaseSettings):
     library_file: str = "data/library.json"
     log_level: str = "INFO"
     allowed_hosts: list[str] = Field(default_factory=lambda: ["localhost", "127.0.0.1"], min_length=1)
-    allowed_origins: list[str] = Field(default_factory=list)
+    allowed_origins: list[str] = Field(default_factory=lambda: ["capacitor://localhost", "https://localhost"])
     enable_dev_origin: bool = False
     # Sibling Web build for single-port local runs; point elsewhere (or at nothing) for API-only deployments.
     frontend_dist: str = "../frontend/dist"

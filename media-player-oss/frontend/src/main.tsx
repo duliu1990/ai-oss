@@ -10,7 +10,7 @@ import { PlayerEngine } from './player/engine';
 import './style.css';
 
 const storage = browserStorage();
-const base = initialConnection(platform.native, platform.preset, storage, platform.policy);
+const base = initialConnection(platform.native, platform.preset, storage);
 // One token holder serves both clients, so an expired session stops listing and playback together.
 const tokens = new TokenStore(base || '', storage);
 // Construct exactly once outside React render/effects, including StrictMode remounts.
@@ -19,7 +19,7 @@ audio.id = 'audio';
 audio.hidden = true;
 document.body.append(audio);
 const player = new PlayerEngine(audio, new ApiClient(base || '', undefined, tokens), storage, platform.native, base);
-const library = new LibraryStore(player, { native: platform.native, base, policy: platform.policy, storage, tokens });
+const library = new LibraryStore(player, { native: platform.native, base, storage, tokens });
 const runtime = { player, library, native: platform.native };
 const root = createRoot(document.getElementById('root')!);
 root.render(<StrictMode><RuntimeProvider runtime={runtime}><App /></RuntimeProvider></StrictMode>);

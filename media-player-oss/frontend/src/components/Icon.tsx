@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react';
 
-export type IconName = 'play' | 'pause' | 'prev' | 'next' | 'shuffle' | 'repeat' | 'volume' | 'muted' | 'heart' | 'heart-fill' | 'edit' | 'note' | 'search' | 'refresh';
+export type IconName = 'play' | 'pause' | 'prev' | 'next' | 'shuffle' | 'repeat' | 'volume' | 'muted' | 'heart' | 'heart-fill' | 'edit' | 'note' | 'search' | 'refresh' | 'menu' | 'close';
 const paths: Record<IconName, ReactNode> = {
   play: <path d="M8 5.5v13a1 1 0 0 0 1.5.86l10.4-6.5a1 1 0 0 0 0-1.72L9.5 4.64A1 1 0 0 0 8 5.5z" fill="currentColor" stroke="none" />,
   pause: <g fill="currentColor" stroke="none"><rect x="6.5" y="5" width="4" height="14" rx="1.2" /><rect x="13.5" y="5" width="4" height="14" rx="1.2" /></g>,
@@ -16,6 +16,8 @@ const paths: Record<IconName, ReactNode> = {
   note: <path d="M9 18V6.5l10-2V16M9 18a2.5 2.5 0 1 1-5 0 2.5 2.5 0 0 1 5 0zm10-2a2.5 2.5 0 1 1-5 0 2.5 2.5 0 0 1 5 0zM9 10l10-2" />,
   search: <><circle cx="11" cy="11" r="6" /><path d="m16 16 4 4" /></>,
   refresh: <path d="M19 12a7 7 0 1 1-2.05-4.95M19 4.5V8h-3.5" />,
+  menu: <path d="M4 7h16M4 12h16M4 17h10" />,
+  close: <path d="m6 6 12 12M18 6 6 18" />,
 };
 
 export function Icon({ name }: { name: IconName }) {

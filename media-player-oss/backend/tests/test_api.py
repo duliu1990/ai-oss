@@ -596,6 +596,12 @@ def test_configuration_environment_arrays_and_root_relative_paths(monkeypatch, t
     assert configured.library_path == ROOT / "data/library.json"
 
 
+def test_default_origins_allow_native_http_requests(monkeypatch):
+    monkeypatch.delenv("ALLOWED_ORIGINS", raising=False)
+    configured = Settings(_env_file=None)
+    assert configured.cors_origins == NATIVE_ORIGINS
+
+
 def test_default_frontend_is_sibling_build(monkeypatch):
     monkeypatch.delenv("FRONTEND_DIST", raising=False)
     assert Settings(_env_file=None).frontend_path.resolve() == ROOT.parent / "frontend" / "dist"

@@ -2,7 +2,7 @@ import type { CapacitorConfig } from '@capacitor/cli';
 
 const config: CapacitorConfig = {
   appId: 'com.mediaplayeross.app',
-  appName: 'OSS 音乐',
+  appName: '轻听',
   webDir: 'dist',
   loggingBehavior: 'debug',
   server: {

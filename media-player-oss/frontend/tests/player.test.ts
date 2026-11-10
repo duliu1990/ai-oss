@@ -4,8 +4,8 @@ import type { ConfigResponse, Track, TracksResponse } from '../src/api/types';
 import { displayArtist, displayTitle, visibleTracks } from '../src/library/metadata';
 import { LibraryStore } from '../src/library/store';
 import { isTokenUsable, readToken, TokenStore, tokenKey } from '../src/platform/auth';
-import { CONNECTION_KEY, initialConnection, validateOrigin } from '../src/platform/connection';
-import type { ConnectionPolicy, StorageLike } from '../src/platform/connection';
+import { CONNECTION_KEY, initialConnection, platform, validateOrigin } from '../src/platform/connection';
+import type { StorageLike } from '../src/platform/connection';
 import { PlayerEngine } from '../src/player/engine';
 import type { AudioPort } from '../src/player/engine';
 import { defaults, readPreferences, STORE_KEY } from '../src/player/preferences';
@@ -77,7 +77,6 @@ class FakeAudio extends EventTarget implements AudioPort {
 }
 
 const keys = ['media/a.mp3', 'media/b.mp3', 'media/c.mp3'];
-const secure: ConnectionPolicy = { development: false, production: true, allowHttp: false };
 const config: ConfigResponse = { oss_ready: true, oss_missing: [], bucket: 'music', prefix: 'media/' };
 const engines: PlayerEngine[] = [];
 const stores: LibraryStore[] = [];
@@ -125,7 +124,7 @@ function libraryFixture(native = false, base = '', signedInOrigins = [base, 'htt
     }
     return clients.get(origin)!;
   };
-  const store = new LibraryStore(result.player, { native, base, policy: secure, storage: result.storage, tokens }, makeClient);
+  const store = new LibraryStore(result.player, { native, base, storage: result.storage, tokens }, makeClient);
   stores.push(store);
   return { ...result, store, makeClient, tokens };
 }
@@ -151,7 +150,7 @@ describe('default browser fetch receiver', () => {
     return browserFetch;
   }
 
-  it.each(['', 'https://music.example:9443'])('preserves the native receiver for config, tracks and metadata with base %j', async (base) => {
+  it.each(['', 'https://music.example:9443', 'http://127.0.0.1:8767'])('preserves the native receiver for config, tracks and metadata with base %j', async (base) => {
     const entry = { key: keys[0], title: '', artist: '', favorite: true };
     const respond = vi.fn<typeof fetch>()
       .mockImplementationOnce(async () => json(config))
@@ -196,13 +195,13 @@ describe('default browser fetch receiver', () => {
     const storage = new MemoryStorage();
     // A Web launch must ignore a native preset and saved server while using the default transport.
     storage.setItem(CONNECTION_KEY, 'https://stored.example');
-    const base = initialConnection(false, 'https://preset.example', storage, secure)!;
+    const base = initialConnection(false, 'https://preset.example', storage)!;
     authorize(storage, base);
     const tokens = new TokenStore(base, storage);
     const audio = new FakeAudio();
     const player = new PlayerEngine(audio, new ApiClient(base, undefined, tokens), storage);
     engines.push(player);
-    const store = new LibraryStore(player, { native: false, base, policy: secure, storage, tokens });
+    const store = new LibraryStore(player, { native: false, base, storage, tokens });
     stores.push(store);
     for (let attempt = 0; attempt < 2; attempt++) {
       await store.refresh();
@@ -713,29 +712,53 @@ describe('metadata precedence and API semantics', () => {
 });
 
 describe('service connection and library request isolation', () => {
-  it.each(['https://music.example', 'https://music.example:9443', 'https://[::1]:8767', 'https://music.example/'])('accepts a secure origin: %s', (origin) => {
-    expect(validateOrigin(origin, secure)).toBe(new URL(origin).origin);
+  it.each([
+    'https://music.example', 'https://music.example:9443', 'https://[::1]:8767', 'https://music.example/',
+    'http://127.0.0.1:8767', 'http://127.0.0.1:8767/', 'http://music.example', 'http://music.example:8767/',
+    'http://[::1]', 'http://[::1]:8767', 'http://[::1]:8767/',
+  ])('accepts an HTTP or HTTPS origin without a development-only policy: %s', (origin) => {
+    expect(validateOrigin(origin)).toBe(new URL(origin).origin);
   });
 
-  it.each(['', 'music.example', '//music.example', 'javascript:alert(1)', 'file:///music', 'http://music.example', 'https://user:pass@music.example', 'https://@music.example', 'https://music.example/api', 'https://music.example/.', 'https://music.example?x=1', 'https://music.example?', 'https://music.example#x', 'https://music.example#', 'https://music.example\\evil', 'https://music.exa\nmple'])('rejects unsafe or non-origin input: %s', (origin) => {
-    expect(() => validateOrigin(origin, secure)).toThrow();
+  it.each([
+    '', 'music.example', '//music.example', 'javascript:alert(1)', 'file:///music',
+    ...['http', 'https'].flatMap((protocol) => [
+      `${protocol}://user:pass@music.example`, `${protocol}://@music.example`,
+      `${protocol}://music.example/api`, `${protocol}://music.example/.`,
+      `${protocol}://music.example?x=1`, `${protocol}://music.example?`,
+      `${protocol}://music.example#x`, `${protocol}://music.example#`,
+      `${protocol}://music.example\\evil`, `${protocol}://music.exa\nmple`,
+      `${protocol}://music.exa\tmple`, `${protocol}://music.exa\u0000mple`, `${protocol}://music.exa\u007fmple`,
+    ]),
+  ])('rejects unsafe or non-origin input: %s', (origin) => {
+    expect(() => validateOrigin(origin)).toThrow();
   });
 
-  it('only allows HTTP with an explicit development flag, never in production', () => {
-    expect(validateOrigin('http://127.0.0.1:8767', { development: true, production: false, allowHttp: true })).toBe('http://127.0.0.1:8767');
-    expect(() => validateOrigin('http://127.0.0.1:8767', { development: true, production: true, allowHttp: true })).toThrow();
-    expect(() => validateOrigin('http://127.0.0.1:8767', { development: true, production: false, allowHttp: false })).toThrow();
+  it('accepts native HTTP presets and gives a stored HTTP origin precedence', () => {
+    const storage = new MemoryStorage();
+    expect(initialConnection(true, 'http://127.0.0.1:8767/', storage)).toBe('http://127.0.0.1:8767');
+    storage.setItem(CONNECTION_KEY, 'http://music.example:8767/');
+    expect(initialConnection(true, 'http://127.0.0.1:8767', storage)).toBe('http://music.example:8767');
+    expect(initialConnection(false, 'http://127.0.0.1:8767', storage)).toBe('');
+  });
+
+  it('defaults native launches to the remote HTTP service without changing Web origin', () => {
+    expect(platform.preset).toBe('http://8.137.103.155');
+    expect(initialConnection(true, platform.preset, new MemoryStorage())).toBe('http://8.137.103.155');
+    expect(initialConnection(false, platform.preset, new MemoryStorage())).toBe('');
   });
 
   it('fixes Web to same-origin and uses validated stored/preset origins only on native', () => {
     const storage = new MemoryStorage();
     storage.setItem(CONNECTION_KEY, 'https://stored.example');
-    expect(initialConnection(false, 'https://preset.example', storage, secure)).toBe('');
-    expect(initialConnection(true, 'https://preset.example', storage, secure)).toBe('https://stored.example');
+    expect(initialConnection(false, 'https://preset.example', storage)).toBe('');
+    expect(initialConnection(true, 'https://preset.example', storage)).toBe('https://stored.example');
     storage.removeItem(CONNECTION_KEY);
-    expect(initialConnection(true, 'https://preset.example', storage, secure)).toBe('https://preset.example');
-    expect(initialConnection(true, '', storage, secure)).toBeNull();
-    expect(initialConnection(true, 'http://unsafe.example', storage, secure)).toBeNull();
+    expect(initialConnection(true, 'https://preset.example', storage)).toBe('https://preset.example');
+    expect(initialConnection(true, '', storage)).toBeNull();
+    expect(initialConnection(true, 'file:///music', storage)).toBeNull();
+    storage.setItem(CONNECTION_KEY, 'http://music.example/api');
+    expect(initialConnection(true, 'http://127.0.0.1:8767', storage)).toBeNull();
   });
 
   it('does not reload Audio when refreshing tracks or saving metadata', async () => {
@@ -767,7 +790,7 @@ describe('service connection and library request isolation', () => {
     const { player, audio, client } = fixture(storage);
     vi.spyOn(client, 'config').mockResolvedValueOnce({ ...config, oss_ready: false, oss_missing: ['OSS_BUCKET'] }).mockResolvedValue(config);
     vi.spyOn(client, 'tracks').mockResolvedValue(listing());
-    const store = new LibraryStore(player, { native: false, base: '', policy: secure, storage, tokens: new TokenStore('', storage) }, () => client);
+    const store = new LibraryStore(player, { native: false, base: '', storage, tokens: new TokenStore('', storage) }, () => client);
     stores.push(store);
     await store.refresh();
     expect(readPreferences(storage).lastTime).toBe(17);
@@ -787,8 +810,8 @@ describe('service connection and library request isolation', () => {
     expect(player.getSnapshot().playing).toBe(true);
   });
 
-  it('rejects Web service switching', () => {
-    expect(() => libraryFixture().store.connect('https://other.example')).toThrow('网页版');
+  it.each(['https://other.example', 'http://other.example'])('rejects Web service switching to %s', (origin) => {
+    expect(() => libraryFixture().store.connect(origin)).toThrow('网页版');
   });
 
   it('stops and clears old media, library and progress before a new service resolves', async () => {
@@ -899,18 +922,24 @@ describe('login sessions and token transport', () => {
     expect(storage.getItem(tokenKey(''))).toBeNull();
   });
 
-  it('keeps one session per service and follows a rebind', () => {
+  it.each([
+    ['https://one.example', 'https://two.example'],
+    ['http://music.example', 'https://music.example'],
+  ])('isolates sessions when rebinding from %s to %s', (first, second) => {
     const storage = new MemoryStorage();
-    authorize(storage, 'https://one.example');
-    const tokens = new TokenStore('https://one.example', storage);
-    expect(tokens.token()).not.toBeNull();
-    tokens.rebind('https://two.example');
+    authorize(storage, first);
+    const tokens = new TokenStore(first, storage);
+    const firstToken = tokens.token();
+    expect(firstToken).not.toBeNull();
+    tokens.rebind(second);
     expect(tokens.token()).toBeNull();
-    tokens.save(signedToken());
+    const secondToken = signedToken(3600, { sub: 'other-player' });
+    tokens.save(secondToken);
     // Saving under the new service must leave the first service's session untouched.
-    tokens.rebind('https://one.example');
-    expect(tokens.token()).toBe(storage.getItem(tokenKey('https://one.example')));
-    expect(storage.getItem(tokenKey('https://two.example'))).not.toBeNull();
+    tokens.rebind(first);
+    expect(tokens.token()).toBe(firstToken);
+    expect(storage.getItem(tokenKey(first))).toBe(firstToken);
+    expect(storage.getItem(tokenKey(second))).toBe(secondToken);
   });
 
   it('sends the token on data calls and withholds it from login and status', async () => {

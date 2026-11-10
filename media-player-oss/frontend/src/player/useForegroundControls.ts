@@ -25,7 +25,7 @@ export function useForegroundControls(player: PlayerEngine, visible: readonly st
   useEffect(() => {
     const keydown = (event: KeyboardEvent) => {
       if (!(event.target instanceof HTMLElement) || event.metaKey || event.ctrlKey || event.altKey || event.isComposing) return;
-      if (document.querySelector('dialog[open]')) return;
+      if (document.querySelector('dialog[open], [aria-modal="true"]')) return;
       const target = event.target;
       const range = target instanceof HTMLInputElement && target.type === 'range';
       const typing = !!target.closest('input, select, textarea, [contenteditable]');

@@ -12,6 +12,8 @@ import { browserStorage, platform, storedOrigin } from './platform/connection';
 import { useLibrary, usePlayer, useRuntime } from './player/context';
 import { useForegroundControls, useOnline } from './player/useForegroundControls';
 
+const mobileQuery = '(max-width: 760px), (max-width: 1024px) and (max-height: 500px)';
+
 function PlayerScreen() {
   const { player, library, native } = useRuntime();
   const state = useLibrary();
@@ -20,6 +22,18 @@ function PlayerScreen() {
   const [query, setQuery] = useState('');
   const [editing, setEditing] = useState<string | null>(null);
   const [settings, setSettings] = useState(false);
+  const [mobile, setMobile] = useState(() => window.matchMedia(mobileQuery).matches);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const closeMenu = useCallback(() => setMenuOpen(false), []);
+  const selectView = (next: LibraryView) => { setView(next); closeMenu(); };
+  const drawerOpen = mobile && menuOpen;
+
+  useEffect(() => {
+    const media = window.matchMedia(mobileQuery);
+    const update = () => { setMobile(media.matches); setMenuOpen(false); };
+    media.addEventListener('change', update);
+    return () => media.removeEventListener('change', update);
+  }, []);
   const [toast, setToast] = useState<{ message: string; error: boolean } | null>(null);
   const search = useRef<HTMLInputElement>(null);
   const online = useOnline();
@@ -57,18 +71,32 @@ function PlayerScreen() {
     : query ? '没有匹配的歌曲。' : '还没有喜欢的歌曲，点击曲目右侧的收藏按钮添加。';
   const notice = [!online ? '网络已断开。恢复连接后可刷新曲库，点击播放重试；不会自动播放。' : '', state.error, state.notice].filter(Boolean).join(' ');
   return <>
-    <a className="skip-link" href="#library">跳到曲库</a>
+    <a className="skip-link" href="#library" inert={drawerOpen}>跳到曲库</a>
     <div className="app-shell">
-      <Sidebar state={state} view={view} native={native} online={online} onView={setView} onSettings={() => setSettings(true)} onLogout={library.logout} />
+      {drawerOpen && <div className="menu-backdrop" aria-hidden="true" onClick={closeMenu} />}
+      <Sidebar state={state} view={view} native={native} online={online} mobile={mobile} open={drawerOpen} onClose={closeMenu} onView={selectView} onSettings={() => { closeMenu(); setSettings(true); }} onLogout={() => { closeMenu(); library.logout(); }} />
+      <div className="library-shell" inert={drawerOpen}>
+      <header className="mobile-header">
+        <button id="menu-toggle" className="icon-button" type="button" aria-label="打开菜单" aria-controls="sidebar" aria-expanded={drawerOpen} onClick={() => setMenuOpen(true)}><Icon name="menu" /></button>
+        <div className="mobile-brand">轻听<span>OSS PLAYER</span></div>
+        <span className="mobile-status" role="status" aria-label={online ? '网络已连接' : '网络已断开'}><span className={`status-dot ${online ? '' : 'error'}`} /></span>
+      </header>
       <main className="main" id="library" tabIndex={-1}>
-        <header className="page-heading"><div>
-          <p className="eyebrow">YOUR MUSIC, FROM YOUR OWN CLOUD.</p>
-          <h1 id="view-title">{view === 'favorites' ? '我喜欢' : '全部音乐'}<span>。</span></h1>
-          <p id="view-subtitle" className="page-subtitle">{view === 'favorites' ? '收藏的歌曲保存在服务端曲库文件中。' : '读取 OSS 前缀下的音频文件，点击即可播放。'}</p>
-        </div></header>
+        <header className="page-heading">
+          <div className={`library-art ${view === 'favorites' ? 'is-favorites' : ''}`} aria-hidden="true"><span className="vinyl"><Icon name={view === 'favorites' ? 'heart-fill' : 'note'} /></span></div>
+          <div>
+            <p className="eyebrow">YOUR PERSONAL SOUNDTRACK</p>
+            <h1 id="view-title">{view === 'favorites' ? '我喜欢' : '全部音乐'}<span>。</span></h1>
+            <p id="view-subtitle" className="page-subtitle">{tracks.length} 首音乐 · {view === 'favorites' ? '把喜欢的旋律留在这里' : '你的私人云端音乐库'}</p>
+          </div>
+        </header>
+        <nav className="library-tabs" aria-label="曲库分类">
+          <button type="button" aria-pressed={view === 'all'} onClick={() => selectView('all')}>全部音乐</button>
+          <button type="button" aria-pressed={view === 'favorites'} onClick={() => selectView('favorites')}><Icon name="heart" />我喜欢</button>
+        </nav>
         <div className="toolbar">
           <label className="search"><span className="sr-only">搜索曲名、歌手或文件名</span><Icon name="search" />
-            <input id="search" ref={search} type="search" value={query} placeholder="搜索曲名、歌手或文件名（按 / 聚焦）" autoComplete="off" spellCheck={false} maxLength={200} onChange={(event) => setQuery(event.target.value)} />
+            <input id="search" ref={search} type="search" value={query} placeholder="搜索歌曲、歌手或文件名" autoComplete="off" spellCheck={false} maxLength={200} onChange={(event) => setQuery(event.target.value)} />
           </label>
           <label className="sort"><span className="sr-only">排序方式</span><select id="sort" value={playback.sort} onChange={(event) => player.setSort(event.target.value as SortOrder)}><option value="recent">最近上传</option><option value="title">按曲名</option><option value="artist">按歌手</option></select></label>
           <button id="play-all" className="button button-dark" type="button" disabled={!tracks.length} onClick={() => player.playAll(keys)}><Icon name="play" />播放全部</button>
@@ -78,8 +106,9 @@ function PlayerScreen() {
         {playback.error && <div className="notice error playback-error" role="alert"><span>{playback.error}</span><button className="button" type="button" onClick={() => player.play(keys)}>重试播放</button></div>}
         <TrackList tracks={tracks} currentKey={playback.currentKey} playing={playback.playing} pending={state.pending} empty={empty} loading={state.loading} onPlay={onPlay} onFavorite={onFavorite} onEdit={setEditing} />
       </main>
+      </div>
     </div>
-    <PlayerBar track={current} keys={keys} pending={!!current && state.pending.has(current.key)} onFavorite={onFavorite} onMessage={showMessage} />
+    <div inert={drawerOpen}><PlayerBar track={current} keys={keys} pending={!!current && state.pending.has(current.key)} onFavorite={onFavorite} onMessage={showMessage} /></div>
     {edited && <EditDialog key={edited.key} track={edited} onClose={() => setEditing(null)} onSaved={() => showMessage('已保存曲目信息')} />}
     {native && (settings || state.base === null) && <ConnectionDialog initialValue={state.base || storedOrigin(browserStorage()) || platform.preset} connected={state.base !== null} onClose={() => setSettings(false)} onMessage={showMessage} />}
     {toast && <div id="toast" className={`toast ${toast.error ? 'error' : ''}`} role={toast.error ? 'alert' : 'status'}>{toast.message}</div>}

@@ -6,20 +6,15 @@ export interface StorageLike {
   removeItem(key: string): void;
 }
 
-export interface ConnectionPolicy { development: boolean; production: boolean; allowHttp: boolean }
 export const CONNECTION_KEY = 'media-player-oss:server';
 
-export function validateOrigin(input: string, policy: ConnectionPolicy): string {
+export function validateOrigin(input: string): string {
   const value = input.trim();
   if (!/^https?:\/\/[^/?#\\\s]+\/?$/i.test(value) || /[@\u0000-\u0020\u007f]/.test(value)) {
-    throw new Error('请输入完整的 HTTPS 服务地址，不含账号、路径、查询参数或片段。');
+    throw new Error('请输入完整的 HTTP 或 HTTPS 服务地址，不含账号、路径、查询参数或片段。');
   }
   let url: URL;
   try { url = new URL(value); } catch { throw new Error('服务地址无效。'); }
-  const httpAllowed = policy.development && !policy.production && policy.allowHttp;
-  if (url.protocol !== 'https:' && !(url.protocol === 'http:' && httpAllowed)) {
-    throw new Error('服务地址必须使用 HTTPS。HTTP 仅限显式启用的开发环境。');
-  }
   if (!url.hostname || url.username || url.password || url.pathname !== '/' || url.search || url.hash) {
     throw new Error('服务地址只能包含协议、主机名和可选端口。');
   }
@@ -42,20 +37,15 @@ export function saveOrigin(origin: string, storage?: StorageLike): boolean {
   } catch { return false; }
 }
 
-export function initialConnection(native: boolean, preset: string, storage: StorageLike | undefined, policy: ConnectionPolicy): string | null {
+export function initialConnection(native: boolean, preset: string, storage: StorageLike | undefined): string | null {
   // Public build-time configuration is only a native default, never a Web override.
   if (!native) return '';
   const candidate = storedOrigin(storage) || preset;
   if (!candidate) return null;
-  try { return validateOrigin(candidate, policy); } catch { return null; }
+  try { return validateOrigin(candidate); } catch { return null; }
 }
 
 export const platform = {
   native: Capacitor.isNativePlatform(),
-  policy: {
-    development: import.meta.env.DEV,
-    production: import.meta.env.PROD,
-    allowHttp: import.meta.env.VITE_ALLOW_HTTP_DEV === 'true',
-  } satisfies ConnectionPolicy,
-  preset: import.meta.env.VITE_API_BASE_URL || '',
+  preset: import.meta.env.VITE_API_BASE_URL || 'http://8.137.103.155',
 };

@@ -2,7 +2,7 @@ import { ApiClient, errorMessage, isAbort } from '../api/client';
 import type { ConfigResponse, MetadataChanges, MetadataResponse, Track } from '../api/types';
 import type { TokenStore } from '../platform/auth';
 import { saveOrigin, validateOrigin } from '../platform/connection';
-import type { ConnectionPolicy, StorageLike } from '../platform/connection';
+import type { StorageLike } from '../platform/connection';
 import { PlayerEngine } from '../player/engine';
 import { visibleTracks } from './metadata';
 
@@ -22,7 +22,6 @@ export interface LibrarySnapshot {
 export interface LibraryOptions {
   native: boolean;
   base: string | null;
-  policy: ConnectionPolicy;
   tokens: TokenStore;
   storage?: StorageLike;
 }
@@ -130,7 +129,7 @@ export class LibraryStore {
 
   connect(input: string): boolean {
     if (!this.options.native) throw new Error('网页版始终连接当前站点。');
-    const base = validateOrigin(input, this.options.policy);
+    const base = validateOrigin(input);
     const persisted = saveOrigin(base, this.options.storage);
     if (base !== this.snapshot.base) {
       this.invalidateRequests();

@@ -27,6 +27,7 @@ export const TrackList = memo(function TrackList({ tracks, currentKey, playing, 
         const duration = typeof info.duration === 'number' ? formatTime(info.duration) : '';
         return <li className={`track ${current ? 'is-current' : ''}`} data-key={track.key} key={track.key} aria-current={current ? true : undefined} onClick={() => onPlay(track.key)}>
           <span className="track-index">
+            <span className="track-art" aria-hidden="true"><Icon name="note" /></span>
             <span className="num" aria-hidden="true">{index + 1}</span>
             <span className="bars" aria-hidden="true"><i /><i /><i /></span>
             <button type="button" className="row-play" data-action="play" aria-label={`${current && playing ? '暂停' : '播放'} ${title}`} onClick={(event) => { event.stopPropagation(); onPlay(track.key); }}><Icon name={current && playing ? 'pause' : 'play'} /></button>
