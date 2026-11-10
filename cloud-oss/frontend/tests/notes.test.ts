@@ -105,6 +105,7 @@ import { api, ApiClient, ApiError } from '../src/api/client';
 import type { NoteEntry, NotesResponse } from '../src/api/types';
 import { NotesView, formatRelativeTime } from '../src/components/NotesView';
 import App from '../src/App';
+import * as auth from '../src/hooks/useAuth';
 import editorStyles from '../src/style.css?raw';
 
 const json = (value: unknown, status = 200) => new Response(JSON.stringify(value), {
@@ -539,6 +540,7 @@ describe('NotesView', () => {
 
 describe('App view switching', () => {
   it('switches between files and notes sections', async () => {
+    vi.spyOn(auth, 'useAuth').mockReturnValue({ isAuthenticated: true, login: vi.fn(), logout: vi.fn() });
     vi.spyOn(api, 'config').mockResolvedValue({ bucket: 'bucket', prefix: '', port: 8700 });
     vi.spyOn(api, 'files').mockResolvedValue({ files: [], folders: [], next_marker: null, truncated: false });
     vi.spyOn(api, 'notes').mockResolvedValue(makeNotesResponse());

@@ -21,6 +21,7 @@ import { useAuth } from './hooks/useAuth';
 import { useFiles } from './hooks/useFiles';
 import { useUpload } from './hooks/useUpload';
 import { isOfficeFile, officePreviewUrl } from './officePreview';
+import { downloadFile, isNativeIOS, openNativeFile, openPreview } from './nativeFiles';
 
 type ConfirmState =
   | { kind: 'delete'; item: DriveItem }
@@ -203,20 +204,18 @@ function AuthenticatedApp({ onLogout }: AuthenticatedAppProps) {
       return;
     }
     if (isOfficeFile(item)) {
-      globalThis.open(officePreviewUrl(item), '_blank', 'noopener,noreferrer');
+      openPreview(officePreviewUrl(item));
+      return;
+    }
+    if (isNativeIOS() && item.name.toLowerCase().endsWith('.pdf')) {
+      void openNativeFile(item, 'preview').catch((error: unknown) => notify(errorMessage(error)));
       return;
     }
     setPreview(item);
   };
 
   const download = (item: DriveItem) => {
-    const link = document.createElement('a');
-    link.href = api.downloadUrl(item.key, true);
-    link.download = item.name;
-    link.rel = 'noopener';
-    document.body.append(link);
-    link.click();
-    link.remove();
+    void downloadFile(api, item).catch((error: unknown) => notify(errorMessage(error)));
   };
 
   const askOverwrite = useCallback((name: string) => new Promise<boolean>((resolve) => {

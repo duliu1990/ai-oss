@@ -4,6 +4,7 @@ import type { DriveItem, FileWriteResponse } from '../api/types';
 import { MAX_EDIT_BYTES, useEditor, utf8Bytes } from '../hooks/useEditor';
 import { renderMarkdownSafe } from '../markdown';
 import { markdownPreviewUrl } from '../markdownPreview';
+import { isNativeIOS, openPreview } from '../nativeFiles';
 import { ConfirmDialog, useDialogFocus } from './Dialogs';
 import { extension, formatBytes } from './FileItem';
 import { Icon } from './Icon';
@@ -168,10 +169,11 @@ function EditorContent({
                 <div className="editor-preview-head">
                   <span>安全预览</span>
                   <button
-                    aria-label={`在新标签页全屏编辑 ${item.name}`}
+                    aria-label={`${isNativeIOS() ? '全屏编辑' : '在新标签页全屏编辑'} ${item.name}`}
                     className="markdown-full-preview"
-                    onClick={() => window.open(markdownPreviewUrl(item), '_blank', 'noopener,noreferrer')}
-                    title="全屏编辑"
+                    disabled={isNativeIOS() && (editor.dirty || editor.saving || editor.status === 'loading')}
+                    onClick={() => openPreview(markdownPreviewUrl(item))}
+                    title={isNativeIOS() && editor.dirty ? '请先保存修改，再全屏编辑' : '全屏编辑'}
                     type="button"
                   >
                     <Icon name="fullscreen" size={14} />全屏编辑 <span aria-hidden="true">↗</span>

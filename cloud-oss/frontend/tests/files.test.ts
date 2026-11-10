@@ -4,6 +4,8 @@ import type { Root } from 'react-dom/client';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import * as XLSX from 'xlsx';
 import App from '../src/App';
+import * as auth from '../src/hooks/useAuth';
+import * as native from '../src/nativeFiles';
 import { api, ApiClient, ApiError, endpoint } from '../src/api/client';
 import type { DriveItem, FileEntry } from '../src/api/types';
 import { breadcrumbSegments } from '../src/components/Breadcrumb';
@@ -69,6 +71,7 @@ afterEach(() => {
 });
 
 async function renderApp(files: FileEntry[] = []) {
+  vi.spyOn(auth, 'useAuth').mockReturnValue({ isAuthenticated: true, login: vi.fn(), logout: vi.fn() });
   vi.spyOn(api, 'config').mockResolvedValue({ bucket: 'mock-bucket', prefix: '', port: 8700 });
   vi.spyOn(api, 'files').mockResolvedValue({
     files,
@@ -253,6 +256,33 @@ describe('Office preview dispatch', () => {
       const expected = `/?${new URLSearchParams({ 'office-preview': '1', key: file.key, name: file.name }).toString()}`;
       expect(open).toHaveBeenCalledWith(expected, '_blank', 'noopener,noreferrer');
     }
+  });
+
+  it('routes native Office previews through in-app navigation', async () => {
+    vi.spyOn(native, 'isNativeIOS').mockReturnValue(true);
+    const open = vi.spyOn(native, 'openPreview').mockImplementation(() => undefined);
+    const { container } = await renderApp(officeFiles.slice(0, 1));
+    act(() => container.querySelector<HTMLButtonElement>('.file-open')?.click());
+    expect(open).toHaveBeenCalledWith(officePreviewUrl({ key: officeFiles[0].key, name: officeFiles[0].name }));
+  });
+
+  it('uses the native PDF reader instead of an iframe', async () => {
+    vi.spyOn(native, 'isNativeIOS').mockReturnValue(true);
+    const open = vi.spyOn(native, 'openNativeFile').mockResolvedValue(undefined);
+    const pdf: FileEntry = { key: 'docs/manual.PDF', name: 'manual.PDF', size: 128, last_modified: '2026-01-01T00:00:00Z', is_dir: false };
+    const { container } = await renderApp([pdf]);
+    await act(async () => container.querySelector<HTMLButtonElement>('.file-open')?.click());
+    expect(open).toHaveBeenCalledWith(expect.objectContaining({ key: pdf.key, name: pdf.name }), 'preview');
+    expect(container.querySelector('iframe')).toBeNull();
+  });
+
+  it('shows native PDF download errors without navigating away', async () => {
+    vi.spyOn(native, 'isNativeIOS').mockReturnValue(true);
+    vi.spyOn(native, 'openNativeFile').mockRejectedValue(new Error('文件读取失败（404）。'));
+    const pdf: FileEntry = { key: 'docs/manual.pdf', name: 'manual.pdf', size: 128, last_modified: '2026-01-01T00:00:00Z', is_dir: false };
+    const { container } = await renderApp([pdf]);
+    await act(async () => container.querySelector<HTMLButtonElement>('.file-open')?.click());
+    expect(container.textContent).toContain('文件读取失败（404）');
   });
 
   it('keeps legacy Office formats in the existing modal and assigns distinct modern-format icons', async () => {

@@ -2,6 +2,7 @@ import { useState } from 'react';
 import type { ReactNode } from 'react';
 import type { ConfigResponse } from '../api/types';
 import { Icon } from './Icon';
+import appLogo from '../assets/app-logo.png';
 
 export type ActiveSection = 'files' | 'notes';
 
@@ -25,7 +26,7 @@ export function Layout({ activeSection = 'files', backgroundInert = false, confi
       {navOpen && <button aria-label="关闭导航" className="nav-scrim" onClick={closeNav} type="button" />}
       <aside className={`sidebar ${navOpen ? 'open' : ''}`}>
         <div className="brand">
-          <div className="brand-mark"><Icon name="archive" size={24} /></div>
+          <div className="brand-mark"><img src={appLogo} alt="" aria-hidden="true" /></div>
           <div><strong>轻存储</strong><small>PRIVATE / 42</small></div>
         </div>
         <button className="primary-action" onClick={() => { onUpload(); closeNav(); }} type="button">

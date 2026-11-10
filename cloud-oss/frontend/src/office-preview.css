@@ -71,6 +71,7 @@ button:disabled { cursor: not-allowed; opacity: .5; }
 .office-preview-mark-xlsx { color: #23714f; background: #e7f6ee; border-color: #c7e5d5; }
 .office-preview-mark-pptx { color: #a84c35; background: #fbede8; border-color: #ecd1c8; }
 
+.office-preview-actions { display: flex; gap: 8px; }
 .office-preview-heading { min-width: 0; }
 .office-preview-heading span {
   display: block;

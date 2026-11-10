@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import type { FormEvent } from 'react';
 import { useAuth } from '../hooks/useAuth';
-import { Icon } from './Icon';
+import appLogo from '../assets/app-logo.png';
 
 interface LoginPageProps {
   onLogin: () => void;
@@ -34,7 +34,7 @@ export function LoginPage({ onLogin }: LoginPageProps) {
       <div aria-hidden="true" className="login-grid" />
       <section aria-labelledby="login-title" className="login-card">
         <div className="login-brand">
-          <span className="login-mark"><Icon name="archive" size={25} /></span>
+          <span className="login-mark"><img src={appLogo} alt="" aria-hidden="true" /></span>
           <span><strong>轻存储</strong><small>PRIVATE / 42</small></span>
         </div>
         <div className="login-heading">

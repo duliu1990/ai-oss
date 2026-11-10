@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client';
 import type { Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import App from '../src/App';
+import * as auth from '../src/hooks/useAuth';
 import { api, ApiClient, ApiError } from '../src/api/client';
 import type { DriveItem, FileEntry } from '../src/api/types';
 import { CreateFileDialog, createFileNameError } from '../src/components/CreateFileDialog';
@@ -31,6 +32,7 @@ let stylesheet: HTMLStyleElement | null = null;
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 
 beforeEach(() => {
+  vi.spyOn(auth, 'useAuth').mockReturnValue({ isAuthenticated: true, login: vi.fn(), logout: vi.fn() });
   stylesheet = document.createElement('style');
   stylesheet.textContent = editorStyles;
   document.head.append(stylesheet);

@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../api/client';
+import { downloadFile, isNativeIOS, returnToFiles } from '../nativeFiles';
 import {
   assertOfficeFileSize,
   assertXlsxZipSignature,
@@ -111,6 +112,7 @@ export function OfficePreviewApp() {
   const stageRef = useRef<HTMLDivElement>(null);
   const [status, setStatus] = useState<PreviewStatus>('loading');
   const [message, setMessage] = useState('正在安全读取文件…');
+  const [downloadError, setDownloadError] = useState<string | null>(null);
 
   useEffect(() => {
     document.title = request.name;
@@ -166,13 +168,10 @@ export function OfficePreviewApp() {
 
   const download = () => {
     if (request.key.length === 0) return;
-    const link = document.createElement('a');
-    link.href = api.downloadUrl(request.key, true);
-    link.download = request.name;
-    link.rel = 'noopener';
-    document.body.append(link);
-    link.click();
-    link.remove();
+    setDownloadError(null);
+    void downloadFile(api, request).catch((error: unknown) => {
+      setDownloadError(error instanceof Error ? error.message : '下载失败，请稍后重试。');
+    });
   };
 
   const typeLabel = request.type ? typeLabels[request.type] : 'OFFICE 文件';
@@ -188,10 +187,15 @@ export function OfficePreviewApp() {
           <span>{typeLabel} · 在线预览</span>
           <h1 title={request.name}>{request.name}</h1>
         </div>
-        <button className="office-download" disabled={request.key.length === 0} onClick={download} type="button">
-          <Icon name="download" size={17} />
-          下载原文件
-        </button>
+        <div className="office-preview-actions">
+          {isNativeIOS() && (
+            <button className="office-download" onClick={() => returnToFiles(request.key)} type="button">返回文件</button>
+          )}
+          <button className="office-download" disabled={request.key.length === 0} onClick={download} type="button">
+            <Icon name="download" size={17} />
+            下载原文件
+          </button>
+        </div>
       </header>
 
       <section aria-busy={status === 'loading' || status === 'rendering'} className={`office-preview-canvas office-preview-${request.type ?? 'unknown'}`}>
@@ -203,11 +207,11 @@ export function OfficePreviewApp() {
             <p>复杂文档可能需要稍候片刻，请不要关闭此页面。</p>
           </div>
         )}
-        {status === 'error' && (
+        {(status === 'error' || downloadError) && (
           <div aria-live="assertive" className="office-preview-state office-preview-error">
             <span className="office-error-symbol">!</span>
-            <strong>暂时无法显示此文件</strong>
-            <p>{message}</p>
+            <strong>{downloadError ? '下载失败' : '暂时无法显示此文件'}</strong>
+            <p>{downloadError ?? message}</p>
             <button disabled={request.key.length === 0} onClick={download} type="button">
               <Icon name="download" size={17} />下载后打开
             </button>
@@ -215,7 +219,7 @@ export function OfficePreviewApp() {
         )}
       </section>
       <footer className="office-preview-foot">
-        <span>轻存储文档阅读器</span>
+        <span aria-live="polite">{downloadError ?? '轻存储文档阅读器'}</span>
         <span>文件仅通过当前文件服务读取，不会生成外部分享链接</span>
       </footer>
     </main>

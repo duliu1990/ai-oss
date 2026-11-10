@@ -109,6 +109,7 @@ vi.mock('@mdxeditor/editor', async () => {
 
 import { ApiClient, ApiError } from '../src/api/client';
 import { MarkdownPreviewApp } from '../src/MarkdownPreviewApp';
+import * as native from '../src/nativeFiles';
 import { isSafeMarkdownLink, markdownPreviewRequest, rootApplication } from '../src/markdownPreview';
 
 let root: Root | null = null;
@@ -369,6 +370,99 @@ describe('MarkdownPreviewApp editing', () => {
     const failed = await renderEditor(failingClient);
     await settle();
     expect(failed.querySelector('.markdown-preview-error')?.textContent).toContain('无法连接文件服务');
+  });
+
+  it('returns from a clean native editor to the file list', async () => {
+    vi.spyOn(native, 'isNativeIOS').mockReturnValue(true);
+    const back = vi.spyOn(native, 'returnToFiles').mockImplementation(() => undefined);
+    const client = new ApiClient('');
+    vi.spyOn(client, 'editFile').mockResolvedValue(response('# Original'));
+    const host = await renderEditor(client);
+    await settle();
+    clickButton(host, '返回文件');
+    expect(back).toHaveBeenCalledWith('docs/guide.md');
+  });
+
+  it('protects unsaved native edits when returning and allows cancellation or discard', async () => {
+    vi.spyOn(native, 'isNativeIOS').mockReturnValue(true);
+    const back = vi.spyOn(native, 'returnToFiles').mockImplementation(() => undefined);
+    const client = new ApiClient('');
+    vi.spyOn(client, 'editFile').mockResolvedValue(response('# Original'));
+    const host = await renderEditor(client);
+    await settle();
+    editContent(host, '# Local');
+    clickButton(host, '返回文件');
+    expect(back).not.toHaveBeenCalled();
+    expect(host.querySelector('[role="alertdialog"]')?.textContent).toContain('修改尚未保存');
+    clickButton(host, '继续编辑');
+    expect(host.querySelector('[role="alertdialog"]')).toBeNull();
+    expect(host.querySelector('[contenteditable="true"]')?.textContent).toBe('# Local');
+    clickButton(host, '返回文件');
+    clickButton(host, '放弃修改并返回');
+    expect(back).toHaveBeenCalledWith('docs/guide.md');
+  });
+
+  it('keeps native return confirmation above deleted-file recovery', async () => {
+    vi.spyOn(native, 'isNativeIOS').mockReturnValue(true);
+    const back = vi.spyOn(native, 'returnToFiles').mockImplementation(() => undefined);
+    const client = new ApiClient('');
+    vi.spyOn(client, 'editFile').mockResolvedValue(response('# Original'));
+    vi.spyOn(client, 'updateFile').mockRejectedValue(new ApiError('missing', 404));
+    const host = await renderEditor(client);
+    await settle();
+    editContent(host, '# Recover me');
+    clickButton(host, '保存修改');
+    await settle();
+    clickButton(host, '复制内容');
+    await settle();
+    expect(navigator.clipboard.writeText).toHaveBeenCalledWith('# Recover me');
+    clickButton(host, '关闭窗口');
+    expect(host.querySelector('#markdown-missing-title')).toBeNull();
+    expect(host.querySelectorAll('[role="alertdialog"]')).toHaveLength(1);
+    expect(host.querySelector('#markdown-return-title')).not.toBeNull();
+    clickButton(host, '继续编辑');
+    expect(host.querySelector('#markdown-missing-title')).not.toBeNull();
+    expect(host.querySelector('[contenteditable="true"]')?.textContent).toBe('# Recover me');
+    clickButton(host, '关闭窗口');
+    clickButton(host, '放弃修改并返回');
+    expect(back).toHaveBeenCalledWith('docs/guide.md');
+  });
+
+  it('does not allow returning while a native save is still pending', async () => {
+    vi.spyOn(native, 'isNativeIOS').mockReturnValue(true);
+    const back = vi.spyOn(native, 'returnToFiles').mockImplementation(() => undefined);
+    const client = new ApiClient('');
+    vi.spyOn(client, 'editFile').mockResolvedValue(response('# Original'));
+    let resolveSave!: (value: ReturnType<typeof saved>) => void;
+    vi.spyOn(client, 'updateFile').mockReturnValue(new Promise((resolve) => { resolveSave = resolve; }));
+    const host = await renderEditor(client);
+    await settle();
+    editContent(host, '# Local');
+    clickButton(host, '保存修改');
+    await settle();
+    clickButton(host, '返回文件');
+    const discard = Array.from(host.querySelectorAll('button')).find((button) => button.textContent?.includes('放弃修改并返回'))!;
+    expect(discard.disabled).toBe(true);
+    act(() => discard.click());
+    expect(back).not.toHaveBeenCalled();
+    clickButton(host, '继续编辑');
+    await act(async () => { resolveSave(saved('# Local')); await Promise.resolve(); });
+    clickButton(host, '返回文件');
+    expect(back).toHaveBeenCalledWith('docs/guide.md');
+  });
+
+  it('uses native downloads and displays failures without exposing a token URL', async () => {
+    vi.spyOn(native, 'isNativeIOS').mockReturnValue(true);
+    const download = vi.spyOn(native, 'downloadFile').mockRejectedValue(new Error('下载失败'));
+    const client = new ApiClient('');
+    vi.spyOn(client, 'editFile').mockResolvedValue(response('# Original'));
+    const host = await renderEditor(client);
+    await settle();
+    const link = host.querySelector<HTMLAnchorElement>('.markdown-preview-download')!;
+    expect(link.getAttribute('href')).toBe('#');
+    await act(async () => { link.click(); await Promise.resolve(); });
+    expect(download).toHaveBeenCalledWith(client, expect.objectContaining({ key: 'docs/guide.md' }));
+    expect(host.textContent).toContain('下载失败');
   });
 
   it('aborts and ignores a pending load after unmount', async () => {

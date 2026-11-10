@@ -6,6 +6,7 @@ import { api } from './api/client';
 import { Icon } from './components/Icon';
 import { useMdxEditor } from './hooks/useMdxEditor';
 import { markdownPreviewRequest } from './markdownPreview';
+import { downloadFile, isNativeIOS, returnToFiles } from './nativeFiles';
 import { createMdxEditorPlugins } from './mdxEditorPlugins';
 import '@mdxeditor/editor/style.css';
 import './markdown-preview.css';
@@ -21,6 +22,8 @@ export function MarkdownPreviewApp({ client = api, search = globalThis.location.
   const editorRef = useRef<MDXEditorMethods>(null);
   const latestMarkdownRef = useRef('');
   const [closeHint, setCloseHint] = useState(false);
+  const [confirmReturn, setConfirmReturn] = useState(false);
+  const [downloadError, setDownloadError] = useState<string | null>(null);
   const [renderError, setRenderError] = useState<string | null>(null);
   const [copyMessage, setCopyMessage] = useState<string | null>(null);
   const [ready, setReady] = useState(false);
@@ -92,6 +95,11 @@ export function MarkdownPreviewApp({ client = api, search = globalThis.location.
   };
 
   const closePreview = () => {
+    if (isNativeIOS()) {
+      if (editor.dirty || editor.saving) setConfirmReturn(true);
+      else returnToFiles(request.key);
+      return;
+    }
     window.close();
     setCloseHint(true);
   };
@@ -125,14 +133,23 @@ export function MarkdownPreviewApp({ client = api, search = globalThis.location.
             aria-disabled={request.key.length === 0}
             className="markdown-preview-download"
             download={request.name}
-            href={request.key.length > 0 ? client.downloadUrl(request.key, true) : undefined}
+            href={request.key.length > 0 ? isNativeIOS() ? '#' : client.downloadUrl(request.key, true) : undefined}
             rel="noopener noreferrer"
-            target="_blank"
+            target={isNativeIOS() ? undefined : '_blank'}
+            onClick={(event) => {
+              if (!isNativeIOS()) return;
+              event.preventDefault();
+              if (!request.key) return;
+              setDownloadError(null);
+              void downloadFile(client, request).catch((error: unknown) => {
+                setDownloadError(error instanceof Error ? error.message : '下载失败，请稍后重试。');
+              });
+            }}
           >
             <Icon name="download" size={16} /><span>下载原文件</span>
           </a>
           <button className="markdown-preview-close" onClick={closePreview} type="button">
-            <Icon name="close" size={16} /><span>关闭窗口</span>
+            <Icon name="close" size={16} /><span>{isNativeIOS() ? '返回文件' : '关闭窗口'}</span>
           </button>
         </div>
       </header>
@@ -184,9 +201,22 @@ export function MarkdownPreviewApp({ client = api, search = globalThis.location.
       </section>
 
       <footer className="markdown-preview-foot">
-        <span>轻存储 Markdown 编辑器</span>
+        <span aria-live="polite">{downloadError ?? '轻存储 Markdown 编辑器'}</span>
         <span>{closeHint ? '如果窗口未关闭，请关闭此标签页或使用浏览器返回。' : '自动保护未保存修改 · 原始 HTML 与 MDX/JSX 不执行'}</span>
       </footer>
+
+      {confirmReturn && (
+        <div className="markdown-editor-overlay" role="presentation">
+          <section aria-labelledby="markdown-return-title" aria-modal="true" className="markdown-editor-dialog" role="alertdialog">
+            <h2 id="markdown-return-title">修改尚未保存</h2>
+            <p>返回文件列表将丢弃当前修改。您可以取消并先保存内容。</p>
+            <div className="markdown-dialog-actions">
+              <button disabled={editor.saving} onClick={() => returnToFiles(request.key)} type="button">放弃修改并返回</button>
+              <button onClick={() => setConfirmReturn(false)} type="button">继续编辑</button>
+            </div>
+          </section>
+        </div>
+      )}
 
       {editor.conflict && (
         <div className="markdown-editor-overlay" role="presentation">
@@ -203,7 +233,7 @@ export function MarkdownPreviewApp({ client = api, search = globalThis.location.
         </div>
       )}
 
-      {editor.missing && (
+      {editor.missing && !confirmReturn && (
         <div className="markdown-editor-overlay" role="presentation">
           <section aria-labelledby="markdown-missing-title" aria-modal="true" className="markdown-editor-dialog" role="alertdialog">
             <span className="markdown-dialog-kicker">FILE NOT FOUND</span>
