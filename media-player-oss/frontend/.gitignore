@@ -1,5 +1,5 @@
 node_modules/
-dist/
+# dist/ is committed: the ECS deploys it as-is (see ../run.sh release).
 coverage/
 .vite/
 *.tsbuildinfo

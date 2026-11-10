@@ -12,3 +12,4 @@
 !**/.env.example
 **/.qoder/
 /sync-to-github.sh
+.env

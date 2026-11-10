@@ -1,0 +1,44 @@
+# Installed by deploy/install.sh to /etc/systemd/system/media-player-oss.service.
+# app.py pins 127.0.0.1:8767 and one worker; Nginx is the only public listener.
+[Unit]
+Description=Media Player OSS FastAPI backend
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=media-player
+Group=media-player
+WorkingDirectory=/opt/media-player-oss/current/backend
+# `python app.py` (not bare uvicorn) so truststore uses the system CA store for OSS HTTPS.
+ExecStart=/opt/media-player-oss/current/venv/bin/python app.py
+Environment=PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=15
+
+# Library JSON lives in /var/lib/media-player-oss (LIBRARY_FILE in backend.env).
+StateDirectory=media-player-oss
+StateDirectoryMode=0750
+UMask=0077
+
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+CapabilityBoundingSet=
+
+[Install]
+WantedBy=multi-user.target

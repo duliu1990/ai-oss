@@ -127,7 +127,7 @@ def index(request: Request):
     if not index_path.is_file():
         return JSONResponse(
             {
-                "detail": "Frontend build missing. Build frontend/dist or set FRONTEND_DIST to a built directory."
+                "detail": "Frontend build missing. Build ../frontend/dist or set FRONTEND_DIST to a built directory."
             },
             status_code=503,
         )

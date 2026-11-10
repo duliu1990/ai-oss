@@ -24,7 +24,8 @@ class Settings(BaseSettings):
     allowed_hosts: list[str] = Field(default_factory=lambda: ["localhost", "127.0.0.1"], min_length=1)
     allowed_origins: list[str] = Field(default_factory=list)
     enable_dev_origin: bool = False
-    frontend_dist: str = "frontend/dist"
+    # Sibling Web build for single-port local runs; point elsewhere (or at nothing) for API-only deployments.
+    frontend_dist: str = "../frontend/dist"
     auth_username: str = ""
     auth_password_hash: SecretStr = SecretStr("")
     jwt_secret_key: SecretStr = SecretStr("")

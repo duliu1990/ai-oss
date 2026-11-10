@@ -585,15 +585,20 @@ def test_configuration_environment_arrays_and_root_relative_paths(monkeypatch, t
     monkeypatch.setenv("ALLOWED_HOSTS", '["music.example", "127.0.0.1"]')
     monkeypatch.setenv("ALLOWED_ORIGINS", json.dumps(NATIVE_ORIGINS))
     monkeypatch.setenv("ENABLE_DEV_ORIGIN", "true")
-    monkeypatch.setenv("FRONTEND_DIST", "frontend/dist")
+    monkeypatch.setenv("FRONTEND_DIST", "../frontend/dist")
     monkeypatch.setenv("LIBRARY_FILE", "data/library.json")
     monkeypatch.chdir(tmp_path)
     configured = Settings(_env_file=None)
     assert configured.allowed_hosts == ["music.example", "127.0.0.1"]
     assert configured.allowed_origins == NATIVE_ORIGINS
     assert configured.cors_origins == [*NATIVE_ORIGINS, DEV_ORIGIN]
-    assert configured.frontend_path == ROOT / "frontend/dist"
+    assert configured.frontend_path == ROOT / "../frontend/dist"
     assert configured.library_path == ROOT / "data/library.json"
+
+
+def test_default_frontend_is_sibling_build(monkeypatch):
+    monkeypatch.delenv("FRONTEND_DIST", raising=False)
+    assert Settings(_env_file=None).frontend_path.resolve() == ROOT.parent / "frontend" / "dist"
 
 
 @pytest.fixture
