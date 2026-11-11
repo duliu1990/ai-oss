@@ -1,19 +1,32 @@
 # Driver OSS
 
-A local personal drive backed directly by a private Aliyun OSS bucket. It runs on `127.0.0.1:8700`, requires no login, confines every operation to `OSS_PREFIX`, and serves the separately built frontend from `frontend/dist`.
+A local personal drive backed directly by a private Aliyun OSS bucket. The API runs on `127.0.0.1:8700`, confines every operation to `OSS_PREFIX`, and login is optional (enabled once `AUTH_USERNAME`, `AUTH_PASSWORD_HASH` and `JWT_SECRET_KEY` are all set).
+
+## Layout
+
+- `backend/` — FastAPI service (`app.py`, `routes/`, `tests/`, `pyproject.toml`, `.env`)
+- `frontend/` — React + Vite Web UI and the Capacitor iOS app
+- `run.sh` — local launcher for both
+- `deploy/cloud-oss.conf` — standalone nginx site proxying the backend API only (`/api/`, `/healthz`); install as `/etc/nginx/conf.d/cloud-oss.conf`
 
 ## Run
 
-Requires Python 3.12 and `uv`.
+Requires Python 3.12, `uv`, Node.js 22.12+ and npm.
 
 ```bash
-cp .env.example .env
-# Fill in the OSS settings in .env.
-uv sync --dev
-uv run --locked python app.py
+./run.sh setup   # install dependencies, create backend/.env from the example
+# Fill in the OSS settings in backend/.env.
+./run.sh         # backend on :8700 + Vite on :5173, Ctrl-C stops both
 ```
 
-Open `http://127.0.0.1:8700`. `GET /healthz` remains available even when OSS is not configured. The OSS credentials need list, get, put, multipart upload, copy, and delete permissions within the configured prefix.
+Open `http://127.0.0.1:5173`; Vite proxies `/api` to the backend. Other commands:
+
+- `./run.sh start` — rebuild `frontend/dist` if stale, then serve UI + API from the backend on `http://127.0.0.1:8700`
+- `./run.sh backend` / `./run.sh frontend` — start only one side
+- `./run.sh build` — typecheck and build `frontend/dist`
+- `./run.sh test` — backend pytest + ruff, frontend vitest + typecheck
+
+`GET /healthz` remains available even when OSS is not configured. The OSS credentials need list, get, put, multipart upload, copy, and delete permissions within the configured prefix.
 
 ## API
 

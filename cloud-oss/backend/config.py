@@ -5,6 +5,7 @@ from pydantic import Field, SecretStr, ValidationInfo, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 ROOT = Path(__file__).resolve().parent
+PROJECT_ROOT = ROOT.parent
 
 
 class Settings(BaseSettings):
@@ -90,7 +91,7 @@ class Settings(BaseSettings):
 
     @property
     def frontend_path(self) -> Path:
-        return ROOT / "frontend" / "dist"
+        return PROJECT_ROOT / "frontend" / "dist"
 
 
 settings = Settings()
