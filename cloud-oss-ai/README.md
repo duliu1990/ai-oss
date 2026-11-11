@@ -18,6 +18,7 @@ cloud-oss-ai/
               src/modules/player/ 音乐播放器
               ios/ android/ scripts/native-build.mjs tests/
   deploy/cloud-oss-ai.conf        只代理后端的 nginx 站点文件
+  deploy/backend.sh               Linux 服务器上后台启动 / 停止后端
   run.sh                          本地启动脚本
 ```
 
@@ -112,6 +113,21 @@ appId `com.cloudossai.app`，名称「轻云」，`webDir: dist`（暂定，可�
 - **iOS**：需要 Xcode 26+，Swift Package Manager 工程，打开 `frontend/ios/App/App.xcodeproj`。`CloudFilesPlugin`（`SceneDelegate.swift`）用 QuickLook 预览或分享网盘文件；JS 调用时传入当前服务器地址，Swift 端校验后再下载。`Info.plist` 的 ATS 设置允许 HTTP 服务器和媒体加载。
 - **Android**：需要 Java 21、Android SDK 36（通过 Android Studio 或私有的 `frontend/android/local.properties` 配置）。Android 同时支持 HTTP 和 HTTPS 服务器（已开启明文流量和混合内容；模拟器访问本机后端用 `http://10.0.2.2:8790`，并把 `10.0.2.2` 加入 `ALLOWED_HOSTS`）。没有 CloudFiles 插件，原生打开文件会退回到浏览器下载方式。
 - 原生客户端登录要求后端 `ALLOWED_ORIGINS` 包含 `capacitor://localhost` 和 `https://localhost`。
+
+## Linux 后台运行后端
+
+`deploy/backend.sh` 用 nohup 在后台运行后端，不依赖 systemd。端口取自 `backend/.env` 的 `PORT`（默认 8790），只监听 `127.0.0.1`，对外请配合下面的 nginx 站点文件。
+
+```bash
+./deploy/backend.sh setup     # 首次：uv 安装依赖，生成 backend/.env（填好 OSS 和登录设置）
+./deploy/backend.sh start     # 后台启动，等待 /healthz 通过
+./deploy/backend.sh status    # 是否在运行、/healthz 是否正常
+./deploy/backend.sh logs      # 跟踪日志 backend/run/backend.log
+./deploy/backend.sh restart   # 修改 backend/.env 后需要重启
+./deploy/backend.sh stop
+```
+
+PID 和日志都在 `backend/run/`（已加入 `.gitignore`）。脚本直接用 `backend/.venv/bin/python` 启动，记录的 PID 就是服务进程本身。服务器重启后不会自动拉起，需要再执行一次 `start`。
 
 ## nginx（只代理后端）
 

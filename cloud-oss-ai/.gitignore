@@ -6,6 +6,7 @@
 # Backend runtime state and caches
 backend/.venv/
 backend/data/
+backend/run/
 __pycache__/
 *.py[cod]
 .pytest_cache/
