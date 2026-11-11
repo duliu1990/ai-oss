@@ -1,0 +1,17 @@
+# Secrets: only the .env.example templates are tracked.
+.env
+.env.*
+!.env.example
+
+# Backend runtime state and caches
+backend/.venv/
+backend/data/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+
+# Frontend build output (native-specific ignores live in frontend/.gitignore)
+frontend/node_modules/
+frontend/dist/
+.DS_Store

@@ -1,0 +1,554 @@
+import { act, createElement } from 'react';
+import { createRoot } from 'react-dom/client';
+import type { Root } from 'react-dom/client';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+vi.mock('@mdxeditor/editor', async () => {
+  const React = await import('react');
+  const button = (label: string) => () => React.createElement('button', { type: 'button' }, label);
+  const plugin = () => ({});
+  const codeMirrorPlugin = (options: { codeBlockLanguages: Record<string, string> }) => ({
+    kind: 'code-mirror',
+    ...options,
+  });
+  const diffSourcePlugin = (options: { viewMode?: string; diffMarkdown?: string } = {}) => ({
+    kind: 'diff-source',
+    ...options,
+  });
+  const ConditionalContents = ({ options }: {
+    options: Array<{ fallback?: () => React.ReactNode }>;
+  }) => React.createElement(React.Fragment, null, options.find((option) => option.fallback)?.fallback?.());
+  const DiffSourceToggleWrapper = ({ children }: { children: React.ReactNode }) => React.createElement(
+    React.Fragment,
+    null,
+    children,
+    button('Rich text')(),
+    button('Diff mode')(),
+    button('Source mode')(),
+  );
+  const toolbarPlugin = (options: { toolbarContents: () => React.ReactNode }) => ({
+    kind: 'toolbar',
+    toolbarContents: options.toolbarContents,
+  });
+  const MDXEditor = React.forwardRef((props: Record<string, unknown>, ref) => {
+    const [value, setValue] = React.useState(String(props.markdown ?? ''));
+    const valueRef = React.useRef(value);
+    valueRef.current = value;
+    React.useImperativeHandle(ref, () => ({
+      getMarkdown: () => valueRef.current,
+      setMarkdown: (markdown: string) => {
+        valueRef.current = markdown;
+        setValue(markdown);
+      },
+      insertMarkdown: () => undefined,
+      focus: () => undefined,
+    }));
+    // Like the real editor, rewrite `*` bullets to `-` on load and report it as a normalization.
+    React.useEffect(() => {
+      const normalized = valueRef.current.replace(/^\* /gm, '- ');
+      if (normalized === valueRef.current) return;
+      valueRef.current = normalized;
+      setValue(normalized);
+      (props.onChange as ((next: string, normalize: boolean) => void) | undefined)?.(normalized, true);
+    }, []);
+    const plugins = props.plugins as Array<{
+      kind?: string;
+      toolbarContents?: () => React.ReactNode;
+      codeBlockLanguages?: Record<string, string>;
+      diffMarkdown?: string;
+    }>;
+    const toolbar = plugins.find((item) => item.kind === 'toolbar');
+    const codeMirror = plugins.find((item) => item.kind === 'code-mirror');
+    const diffSource = plugins.find((item) => item.kind === 'diff-source');
+    return React.createElement('div', {
+      className: props.className,
+      'data-code-languages': JSON.stringify(codeMirror?.codeBlockLanguages ?? {}),
+      'data-diff-markdown': diffSource?.diffMarkdown ?? '',
+    },
+      React.createElement('div', { role: 'toolbar' }, toolbar?.toolbarContents?.()),
+      React.createElement('div', {
+        className: props.contentEditableClassName,
+        contentEditable: true,
+        onInput: (event: React.FormEvent<HTMLDivElement>) => {
+          const markdown = event.currentTarget.textContent ?? '';
+          valueRef.current = markdown;
+          setValue(markdown);
+          (props.onChange as ((next: string, normalize: boolean) => void) | undefined)?.(markdown, false);
+        },
+        suppressContentEditableWarning: true,
+      }, value),
+    );
+  });
+  return {
+    BlockTypeSelect: button('Block type'),
+    BoldItalicUnderlineToggles: button('Bold italic underline'),
+    ChangeCodeMirrorLanguage: button('Change code language'),
+    CodeToggle: button('Inline code'),
+    ConditionalContents,
+    CreateLink: button('Create link'),
+    DiffSourceToggleWrapper,
+    HighlightToggle: button('Highlight'),
+    InsertCodeBlock: button('Insert code block'),
+    InsertFrontmatter: button('Insert frontmatter'),
+    InsertImage: button('Insert image'),
+    InsertTable: button('Insert table'),
+    InsertThematicBreak: button('Insert thematic break'),
+    ListsToggle: button('Lists'),
+    MDXEditor,
+    Separator: () => React.createElement('span', { role: 'separator' }),
+    StrikeThroughSupSubToggles: button('Strikethrough superscript subscript'),
+    UndoRedo: button('Undo redo'),
+    codeBlockPlugin: plugin,
+    codeMirrorPlugin,
+    diffSourcePlugin,
+    frontmatterPlugin: plugin,
+    headingsPlugin: plugin,
+    imagePlugin: plugin,
+    linkDialogPlugin: plugin,
+    linkPlugin: plugin,
+    listsPlugin: plugin,
+    markdownShortcutPlugin: plugin,
+    quotePlugin: plugin,
+    tablePlugin: plugin,
+    thematicBreakPlugin: plugin,
+    toolbarPlugin,
+  };
+});
+
+import { DriveApi, ApiError } from '../../src/modules/drive/api/client';
+import { MarkdownPreviewApp } from '../../src/modules/drive/MarkdownPreviewApp';
+import * as native from '../../src/modules/drive/nativeFiles';
+import { isSafeMarkdownLink, markdownPreviewRequest, rootApplication } from '../../src/modules/drive/markdownPreview';
+import markdownPreviewCss from '../../src/modules/drive/markdown-preview.css?raw';
+import officePreviewCss from '../../src/modules/drive/office-preview.css?raw';
+import indexHtml from '../../index.html?raw';
+import previewHtml from '../../preview.html?raw';
+
+let root: Root | null = null;
+let container: HTMLDivElement | null = null;
+Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
+
+beforeEach(() => {
+  container = document.createElement('div');
+  document.body.append(container);
+  Object.defineProperty(navigator, 'clipboard', {
+    configurable: true,
+    value: { writeText: vi.fn().mockResolvedValue(undefined) },
+  });
+});
+
+afterEach(() => {
+  if (root) act(() => root?.unmount());
+  root = null;
+  container?.remove();
+  container = null;
+  vi.restoreAllMocks();
+});
+
+async function renderEditor(client: DriveApi, search = '?markdown-preview=1&key=docs%2Fguide.md&name=Guide.md') {
+  root = createRoot(container!);
+  await act(async () => {
+    root?.render(createElement(MarkdownPreviewApp, { client, search }));
+    await Promise.resolve();
+  });
+  return container!;
+}
+
+async function settle() {
+  await act(async () => {
+    await Promise.resolve();
+    await new Promise((resolve) => globalThis.setTimeout(resolve, 0));
+    await Promise.resolve();
+  });
+}
+
+function editContent(host: HTMLElement, markdown: string) {
+  const editable = host.querySelector<HTMLElement>('[contenteditable="true"]')!;
+  act(() => {
+    editable.textContent = markdown;
+    editable.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText' }));
+  });
+}
+
+function clickButton(host: HTMLElement, label: string) {
+  const button = Array.from(host.querySelectorAll('button')).find((item) => item.textContent?.includes(label));
+  expect(button, `button containing ${label}`).toBeDefined();
+  act(() => button?.click());
+}
+
+const response = (content: string, etag = 'etag-1') => ({
+  key: 'docs/guide.md',
+  content,
+  content_type: 'text/markdown; charset=utf-8',
+  etag,
+  size: content.length,
+});
+
+const saved = (content: string, etag = 'etag-2') => ({
+  key: 'docs/guide.md',
+  etag,
+  size: content.length,
+});
+
+describe('Markdown editor routing and safety helpers', () => {
+  it('keeps the compatible Markdown route and validates Markdown keys', () => {
+    expect(rootApplication('?markdown-preview=1')).toBe('markdown-preview');
+    expect(rootApplication('?office-preview=1&markdown-preview=1')).toBe('office-preview');
+    expect(rootApplication('?key=docs%2Fguide.md')).toBe('app');
+    expect(markdownPreviewRequest('?key=folder%2Fsafe.MD&name=阅读.md')).toEqual({
+      key: 'folder/safe.MD', name: '阅读.md', valid: true,
+    });
+    expect(markdownPreviewRequest('?key=folder%2Fplain.txt&name=plain.txt').valid).toBe(false);
+  });
+
+  it('allows only safe link protocols', () => {
+    expect(isSafeMarkdownLink('https://example.com/docs')).toBe(true);
+    expect(isSafeMarkdownLink('mailto:hello@example.com')).toBe(true);
+    expect(isSafeMarkdownLink('javascript:alert(1)')).toBe(false);
+    expect(isSafeMarkdownLink('data:text/html,pwned')).toBe(false);
+  });
+});
+
+describe('standalone preview pages under the iOS status bar', () => {
+  // The native WebView no longer insets content, so a header without the safe-area offset sits
+  // under the status bar where taps never arrive and the page cannot be left.
+  it('lets the page extend under the status bar so env(safe-area-inset-*) is reported', () => {
+    expect(indexHtml).toMatch(/name="viewport"[^>]*viewport-fit=cover/);
+    expect(previewHtml).toMatch(/name="viewport"[^>]*viewport-fit=cover/);
+  });
+
+  it('keeps the Markdown header, toolbar and footer clear of the safe area', () => {
+    expect(markdownPreviewCss).toMatch(/--md-safe-top:\s*env\(safe-area-inset-top/);
+    expect(markdownPreviewCss).toMatch(/--md-safe-bottom:\s*env\(safe-area-inset-bottom/);
+    const shells = markdownPreviewCss.match(/\.markdown-preview-shell \{[^}]*grid-template-rows:[^;]*;/g) ?? [];
+    expect(shells).toHaveLength(2);
+    for (const rule of shells) expect(rule).toMatch(/calc\(\d+px \+ var\(--md-safe-top\)\).*calc\(\d+px \+ var\(--md-safe-bottom\)\)/);
+    const heads = markdownPreviewCss.match(/\.markdown-preview-head \{[^}]*padding:[^;]*;/g) ?? [];
+    expect(heads).toHaveLength(2);
+    for (const rule of heads) expect(rule).toMatch(/padding: var\(--md-safe-top\)/);
+    const toolbars = markdownPreviewCss.match(/\.mdxeditor-toolbar \{[^}]*top:[^;]*;/g) ?? [];
+    expect(toolbars.length).toBeGreaterThan(0);
+    for (const rule of toolbars) expect(rule).toMatch(/top: calc\(64px \+ var\(--md-safe-top\)\)/);
+    expect(markdownPreviewCss).not.toMatch(/\.markdown-preview-foot \{[^}]*padding: 0 \d+px;/);
+  });
+
+  it('keeps the Office header and footer clear of the safe area', () => {
+    expect(officePreviewCss).toMatch(/--reader-safe-top:\s*env\(safe-area-inset-top/);
+    const rows = officePreviewCss.match(/\.office-preview-shell(?:-pptx)? \{[^}]*grid-template-rows:[^;]*;/g) ?? [];
+    expect(rows).toHaveLength(4);
+    for (const rule of rows) expect(rule).toMatch(/grid-template-rows: calc\(\d+px \+ var\(--reader-safe-top\)\)/);
+    const heads = officePreviewCss.match(/\.office-preview-head \{[^}]*padding:[^;]*;/g) ?? [];
+    expect(heads).toHaveLength(2);
+    for (const rule of heads) expect(rule).toMatch(/padding: var\(--reader-safe-top\)/);
+    expect(officePreviewCss).not.toMatch(/\.office-preview-foot \{[^}]*padding: 0 \d+px;/);
+  });
+});
+
+describe('MarkdownPreviewApp editing', () => {
+  it('loads unchanged Markdown into an editable surface with the full toolbar and download', async () => {
+    const client = new DriveApi('');
+    let resolveLoad!: (value: ReturnType<typeof response>) => void;
+    vi.spyOn(client, 'editFile').mockReturnValue(new Promise((resolve) => { resolveLoad = resolve; }));
+    const host = await renderEditor(client, '?markdown-preview=1&key=docs%2Fguide.md&name=产品指南.md');
+    expect(host.textContent).toContain('正在读取 Markdown');
+    expect(document.title).toBe('产品指南.md');
+
+    const markdown = '# Release title\n\n<script>alert(1)</script>\n\nBody';
+    await act(async () => {
+      resolveLoad(response(markdown));
+      await Promise.resolve();
+    });
+    await settle();
+
+    expect(host.querySelector('[role="toolbar"]')).not.toBeNull();
+    expect(host.querySelector('[contenteditable="true"]')?.textContent).toBe(markdown);
+    const mdxEditor = host.querySelector<HTMLElement>('.markdown-mdx-editor')!;
+    expect(mdxEditor.classList).toContain('mdxeditor-full-height');
+    expect(mdxEditor.dataset.diffMarkdown).toBe(markdown);
+    expect(JSON.parse(mdxEditor.dataset.codeLanguages ?? '{}')).toMatchObject({
+      '': 'Plain text',
+      md: 'Markdown',
+      tsx: 'TypeScript (React)',
+    });
+    expect(host.querySelector('script')).toBeNull();
+    for (const label of [
+      'Undo redo',
+      'Bold italic underline',
+      'Inline code',
+      'Highlight',
+      'Strikethrough superscript subscript',
+      'Lists',
+      'Block type',
+      'Create link',
+      'Insert image',
+      'Insert table',
+      'Insert thematic break',
+      'Insert code block',
+      'Insert frontmatter',
+      'Rich text',
+      'Diff mode',
+      'Source mode',
+    ]) {
+      expect(host.textContent).toContain(label);
+    }
+    expect(host.querySelectorAll('[role="separator"]')).toHaveLength(8);
+    const download = host.querySelector<HTMLAnchorElement>('.markdown-preview-download')!;
+    expect(download.getAttribute('href')).toBe('/api/files/download?key=docs%2Fguide.md&download=true');
+    expect(download.download).toBe('产品指南.md');
+  });
+
+  it('marks edits dirty and clears dirty state after a successful save', async () => {
+    const client = new DriveApi('');
+    vi.spyOn(client, 'editFile').mockResolvedValue(response('# Original'));
+    const update = vi.spyOn(client, 'updateFile').mockResolvedValue(saved('# Changed'));
+    const host = await renderEditor(client);
+    await settle();
+
+    editContent(host, '# Changed');
+    expect(host.textContent).toContain('有修改');
+    clickButton(host, '保存修改');
+    await settle();
+
+    expect(update).toHaveBeenCalledWith({ key: 'docs/guide.md', content: '# Changed', expected_etag: 'etag-1' });
+    expect(host.textContent).toContain('已保存');
+    expect(host.querySelector<HTMLElement>('.markdown-mdx-editor')?.dataset.diffMarkdown).toBe('# Changed');
+    expect(host.querySelector<HTMLButtonElement>('.markdown-preview-save')?.disabled).toBe(true);
+  });
+
+  it('saves the current editor Markdown with Cmd/Ctrl+S', async () => {
+    const client = new DriveApi('');
+    vi.spyOn(client, 'editFile').mockResolvedValue(response('# Original'));
+    const update = vi.spyOn(client, 'updateFile').mockResolvedValue(saved('# Shortcut'));
+    const host = await renderEditor(client);
+    await settle();
+    editContent(host, '# Shortcut');
+
+    act(() => globalThis.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 's', metaKey: true })));
+    await settle();
+    expect(update).toHaveBeenCalledWith({ key: 'docs/guide.md', content: '# Shortcut', expected_etag: 'etag-1' });
+  });
+
+  it('shows a conflict and can force-save the preserved local content', async () => {
+    const client = new DriveApi('');
+    vi.spyOn(client, 'editFile').mockResolvedValue(response('# Original'));
+    const update = vi.spyOn(client, 'updateFile')
+      .mockRejectedValueOnce(new ApiError('conflict', 412, { current_etag: 'etag-remote' }))
+      .mockResolvedValueOnce(saved('# Local', 'etag-3'));
+    const host = await renderEditor(client);
+    await settle();
+    editContent(host, '# Local');
+    clickButton(host, '保存修改');
+    await settle();
+
+    expect(host.textContent).toContain('文件已在其他位置更新');
+    clickButton(host, '强制保存');
+    await settle();
+    expect(update).toHaveBeenLastCalledWith({
+      key: 'docs/guide.md', content: '# Local', expected_etag: 'etag-1', force: true,
+    });
+    expect(host.querySelector('[role="alertdialog"]')).toBeNull();
+  });
+
+  it('reloads the remote version after a conflict and updates the editor', async () => {
+    const client = new DriveApi('');
+    vi.spyOn(client, 'editFile')
+      .mockResolvedValueOnce(response('# Original'))
+      .mockResolvedValueOnce(response('# Remote', 'etag-remote'));
+    vi.spyOn(client, 'updateFile').mockRejectedValue(new ApiError('conflict', 412, { current_etag: 'etag-remote' }));
+    const host = await renderEditor(client);
+    await settle();
+    editContent(host, '# Local');
+    clickButton(host, '保存修改');
+    await settle();
+    clickButton(host, '重新加载');
+    await settle();
+
+    expect(host.querySelector('[contenteditable="true"]')?.textContent).toBe('# Remote');
+    expect(host.querySelector('[role="alertdialog"]')).toBeNull();
+    expect(host.textContent).toContain('已保存');
+  });
+
+  it('shows deleted-file recovery and copies the local content after a save 404', async () => {
+    const client = new DriveApi('');
+    vi.spyOn(client, 'editFile').mockResolvedValue(response('# Original'));
+    vi.spyOn(client, 'updateFile').mockRejectedValue(new ApiError('missing', 404));
+    const host = await renderEditor(client);
+    await settle();
+    editContent(host, '# Recover me');
+    clickButton(host, '保存修改');
+    await settle();
+
+    expect(host.textContent).toContain('文件已被删除');
+    clickButton(host, '复制内容');
+    await settle();
+    expect(navigator.clipboard.writeText).toHaveBeenCalledWith('# Recover me');
+    expect(host.textContent).toContain('内容已复制');
+  });
+
+  it('protects dirty work with beforeunload and removes protection after saving', async () => {
+    const client = new DriveApi('');
+    vi.spyOn(client, 'editFile').mockResolvedValue(response('# Original'));
+    vi.spyOn(client, 'updateFile').mockResolvedValue(saved('# Changed'));
+    const host = await renderEditor(client);
+    await settle();
+    editContent(host, '# Changed');
+    await settle();
+
+    const dirtyEvent = new Event('beforeunload', { cancelable: true });
+    globalThis.dispatchEvent(dirtyEvent);
+    expect(dirtyEvent.defaultPrevented).toBe(true);
+    clickButton(host, '保存修改');
+    await settle();
+    const savedEvent = new Event('beforeunload', { cancelable: true });
+    globalThis.dispatchEvent(savedEvent);
+    expect(savedEvent.defaultPrevented).toBe(false);
+  });
+
+  it('renders invalid-route and load-error states', async () => {
+    const invalidClient = new DriveApi('');
+    const invalid = await renderEditor(invalidClient, '?markdown-preview=1&key=docs%2Fguide.txt&name=guide.txt');
+    expect(invalid.textContent).toContain('仅支持 .md 文件全屏编辑');
+    act(() => root?.unmount());
+    root = null;
+    container!.replaceChildren();
+
+    const failingClient = new DriveApi('');
+    vi.spyOn(failingClient, 'editFile').mockRejectedValue(new ApiError('无法连接文件服务，请检查网络和服务状态。'));
+    const failed = await renderEditor(failingClient);
+    await settle();
+    expect(failed.querySelector('.markdown-preview-error')?.textContent).toContain('无法连接文件服务');
+  });
+
+  it('returns from a clean native editor to the file list', async () => {
+    vi.spyOn(native, 'isNativeIOS').mockReturnValue(true);
+    const back = vi.spyOn(native, 'returnToFiles').mockImplementation(() => undefined);
+    const client = new DriveApi('');
+    vi.spyOn(client, 'editFile').mockResolvedValue(response('# Original'));
+    const host = await renderEditor(client);
+    await settle();
+    clickButton(host, '返回文件');
+    expect(back).toHaveBeenCalledWith('docs/guide.md');
+  });
+
+  it('does not treat the editor rewriting the loaded Markdown as an unsaved edit', async () => {
+    vi.spyOn(native, 'isNativeIOS').mockReturnValue(true);
+    const back = vi.spyOn(native, 'returnToFiles').mockImplementation(() => undefined);
+    const client = new DriveApi('');
+    vi.spyOn(client, 'editFile').mockResolvedValue(response('# List\n\n* one\n* two'));
+    const host = await renderEditor(client);
+    await settle();
+    expect(host.querySelector('[contenteditable="true"]')?.textContent).toBe('# List\n\n- one\n- two');
+    expect(host.querySelector('main')?.dataset.dirty).toBe('false');
+    clickButton(host, '返回文件');
+    expect(host.querySelector('[role="alertdialog"]')).toBeNull();
+    expect(back).toHaveBeenCalledWith('docs/guide.md');
+
+    back.mockClear();
+    editContent(host, '# List\n\n- one\n- two\n- three');
+    expect(host.querySelector('main')?.dataset.dirty).toBe('true');
+    clickButton(host, '返回文件');
+    expect(back).not.toHaveBeenCalled();
+    expect(host.querySelector('[role="alertdialog"]')?.textContent).toContain('修改尚未保存');
+  });
+
+  it('protects unsaved native edits when returning and allows cancellation or discard', async () => {
+    vi.spyOn(native, 'isNativeIOS').mockReturnValue(true);
+    const back = vi.spyOn(native, 'returnToFiles').mockImplementation(() => undefined);
+    const client = new DriveApi('');
+    vi.spyOn(client, 'editFile').mockResolvedValue(response('# Original'));
+    const host = await renderEditor(client);
+    await settle();
+    editContent(host, '# Local');
+    clickButton(host, '返回文件');
+    expect(back).not.toHaveBeenCalled();
+    expect(host.querySelector('[role="alertdialog"]')?.textContent).toContain('修改尚未保存');
+    clickButton(host, '继续编辑');
+    expect(host.querySelector('[role="alertdialog"]')).toBeNull();
+    expect(host.querySelector('[contenteditable="true"]')?.textContent).toBe('# Local');
+    clickButton(host, '返回文件');
+    clickButton(host, '放弃修改并返回');
+    expect(back).toHaveBeenCalledWith('docs/guide.md');
+  });
+
+  it('keeps native return confirmation above deleted-file recovery', async () => {
+    vi.spyOn(native, 'isNativeIOS').mockReturnValue(true);
+    const back = vi.spyOn(native, 'returnToFiles').mockImplementation(() => undefined);
+    const client = new DriveApi('');
+    vi.spyOn(client, 'editFile').mockResolvedValue(response('# Original'));
+    vi.spyOn(client, 'updateFile').mockRejectedValue(new ApiError('missing', 404));
+    const host = await renderEditor(client);
+    await settle();
+    editContent(host, '# Recover me');
+    clickButton(host, '保存修改');
+    await settle();
+    clickButton(host, '复制内容');
+    await settle();
+    expect(navigator.clipboard.writeText).toHaveBeenCalledWith('# Recover me');
+    clickButton(host, '关闭窗口');
+    expect(host.querySelector('#markdown-missing-title')).toBeNull();
+    expect(host.querySelectorAll('[role="alertdialog"]')).toHaveLength(1);
+    expect(host.querySelector('#markdown-return-title')).not.toBeNull();
+    clickButton(host, '继续编辑');
+    expect(host.querySelector('#markdown-missing-title')).not.toBeNull();
+    expect(host.querySelector('[contenteditable="true"]')?.textContent).toBe('# Recover me');
+    clickButton(host, '关闭窗口');
+    clickButton(host, '放弃修改并返回');
+    expect(back).toHaveBeenCalledWith('docs/guide.md');
+  });
+
+  it('does not allow returning while a native save is still pending', async () => {
+    vi.spyOn(native, 'isNativeIOS').mockReturnValue(true);
+    const back = vi.spyOn(native, 'returnToFiles').mockImplementation(() => undefined);
+    const client = new DriveApi('');
+    vi.spyOn(client, 'editFile').mockResolvedValue(response('# Original'));
+    let resolveSave!: (value: ReturnType<typeof saved>) => void;
+    vi.spyOn(client, 'updateFile').mockReturnValue(new Promise((resolve) => { resolveSave = resolve; }));
+    const host = await renderEditor(client);
+    await settle();
+    editContent(host, '# Local');
+    clickButton(host, '保存修改');
+    await settle();
+    clickButton(host, '返回文件');
+    const discard = Array.from(host.querySelectorAll('button')).find((button) => button.textContent?.includes('放弃修改并返回'))!;
+    expect(discard.disabled).toBe(true);
+    act(() => discard.click());
+    expect(back).not.toHaveBeenCalled();
+    clickButton(host, '继续编辑');
+    await act(async () => { resolveSave(saved('# Local')); await Promise.resolve(); });
+    clickButton(host, '返回文件');
+    expect(back).toHaveBeenCalledWith('docs/guide.md');
+  });
+
+  it('uses native downloads and displays failures without exposing a token URL', async () => {
+    vi.spyOn(native, 'isNativeIOS').mockReturnValue(true);
+    const download = vi.spyOn(native, 'downloadFile').mockRejectedValue(new Error('下载失败'));
+    const client = new DriveApi('');
+    vi.spyOn(client, 'editFile').mockResolvedValue(response('# Original'));
+    const host = await renderEditor(client);
+    await settle();
+    const link = host.querySelector<HTMLAnchorElement>('.markdown-preview-download')!;
+    expect(link.getAttribute('href')).toBe('#');
+    await act(async () => { link.click(); await Promise.resolve(); });
+    expect(download).toHaveBeenCalledWith(client, expect.objectContaining({ key: 'docs/guide.md' }));
+    expect(host.textContent).toContain('下载失败');
+  });
+
+  it('aborts and ignores a pending load after unmount', async () => {
+    const client = new DriveApi('');
+    let signal: AbortSignal | undefined;
+    let resolveLoad!: (value: ReturnType<typeof response>) => void;
+    vi.spyOn(client, 'editFile').mockImplementation((_key, requestSignal) => {
+      signal = requestSignal;
+      return new Promise((resolve) => { resolveLoad = resolve; });
+    });
+    await renderEditor(client);
+    act(() => root?.unmount());
+    root = null;
+    expect(signal?.aborted).toBe(true);
+    await act(async () => {
+      resolveLoad(response('# Late result'));
+      await Promise.resolve();
+    });
+    expect(container?.textContent).toBe('');
+  });
+});

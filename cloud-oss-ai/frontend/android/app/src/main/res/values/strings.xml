@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">轻云</string>
+    <string name="title_activity_main">轻云</string>
+    <string name="package_name">com.cloudossai.app</string>
+    <string name="custom_url_scheme">com.cloudossai.app</string>
+</resources>

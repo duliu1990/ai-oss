@@ -1,0 +1,635 @@
+import { act, createElement } from 'react';
+import { createRoot } from 'react-dom/client';
+import type { Root } from 'react-dom/client';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+vi.mock('@mdxeditor/editor', async () => {
+  const React = await import('react');
+  const button = (label: string) => () => React.createElement('button', { type: 'button' }, label);
+  const plugin = () => ({});
+  const codeMirrorPlugin = (options: { codeBlockLanguages: Record<string, string> }) => ({
+    kind: 'code-mirror',
+    ...options,
+  });
+  const diffSourcePlugin = (options: { viewMode?: string; diffMarkdown?: string } = {}) => ({
+    kind: 'diff-source',
+    ...options,
+  });
+  const ConditionalContents = ({ options }: {
+    options: Array<{ fallback?: () => React.ReactNode }>;
+  }) => React.createElement(React.Fragment, null, options.find((option) => option.fallback)?.fallback?.());
+  const DiffSourceToggleWrapper = ({ children }: { children: React.ReactNode }) => React.createElement(
+    React.Fragment,
+    null,
+    children,
+    button('Rich text')(),
+    button('Diff mode')(),
+    button('Source mode')(),
+  );
+  const toolbarPlugin = (options: { toolbarContents: () => React.ReactNode }) => ({
+    kind: 'toolbar',
+    toolbarContents: options.toolbarContents,
+  });
+  const MDXEditor = React.forwardRef((props: Record<string, unknown>, ref) => {
+    const [value, setValue] = React.useState(String(props.markdown ?? ''));
+    const valueRef = React.useRef(value);
+    valueRef.current = value;
+    React.useImperativeHandle(ref, () => ({
+      getMarkdown: () => valueRef.current,
+      setMarkdown: (markdown: string) => {
+        valueRef.current = markdown;
+        setValue(markdown);
+      },
+      insertMarkdown: () => undefined,
+      focus: () => undefined,
+    }));
+    // Like the real editor, rewrite `*` bullets to `-` on load and report it as a normalization.
+    React.useEffect(() => {
+      const normalized = valueRef.current.replace(/^\* /gm, '- ');
+      if (normalized === valueRef.current) return;
+      valueRef.current = normalized;
+      setValue(normalized);
+      (props.onChange as ((next: string, normalize: boolean) => void) | undefined)?.(normalized, true);
+    }, []);
+    const plugins = props.plugins as Array<{
+      kind?: string;
+      toolbarContents?: () => React.ReactNode;
+    }>;
+    const toolbar = plugins.find((item) => item.kind === 'toolbar');
+    return React.createElement('div', {
+      className: props.className,
+    },
+      React.createElement('div', { role: 'toolbar' }, toolbar?.toolbarContents?.()),
+      React.createElement('div', {
+        className: props.contentEditableClassName,
+        contentEditable: true,
+        onInput: (event: React.FormEvent<HTMLDivElement>) => {
+          const markdown = event.currentTarget.textContent ?? '';
+          valueRef.current = markdown;
+          setValue(markdown);
+          (props.onChange as ((next: string, normalize: boolean) => void) | undefined)?.(markdown, false);
+        },
+        suppressContentEditableWarning: true,
+      }, value),
+    );
+  });
+  return {
+    BlockTypeSelect: button('Block type'),
+    BoldItalicUnderlineToggles: button('Bold italic underline'),
+    ChangeCodeMirrorLanguage: button('Change code language'),
+    CodeToggle: button('Inline code'),
+    ConditionalContents,
+    CreateLink: button('Create link'),
+    DiffSourceToggleWrapper,
+    HighlightToggle: button('Highlight'),
+    InsertCodeBlock: button('Insert code block'),
+    InsertFrontmatter: button('Insert frontmatter'),
+    InsertImage: button('Insert image'),
+    InsertTable: button('Insert table'),
+    InsertThematicBreak: button('Insert thematic break'),
+    ListsToggle: button('Lists'),
+    MDXEditor,
+    Separator: () => React.createElement('span', { role: 'separator' }),
+    StrikeThroughSupSubToggles: button('Strikethrough superscript subscript'),
+    UndoRedo: button('Undo redo'),
+    codeBlockPlugin: plugin,
+    codeMirrorPlugin,
+    diffSourcePlugin,
+    frontmatterPlugin: plugin,
+    headingsPlugin: plugin,
+    imagePlugin: plugin,
+    linkDialogPlugin: plugin,
+    linkPlugin: plugin,
+    listsPlugin: plugin,
+    markdownShortcutPlugin: plugin,
+    quotePlugin: plugin,
+    tablePlugin: plugin,
+    thematicBreakPlugin: plugin,
+    toolbarPlugin,
+  };
+});
+
+import { api, DriveApi, ApiError } from '../../src/modules/drive/api/client';
+import type { NoteEntry, NotesResponse } from '../../src/modules/drive/api/types';
+import { NotesView, formatRelativeTime } from '../../src/modules/drive/components/NotesView';
+import { driveApp, driveStyles } from './helpers';
+
+const json = (value: unknown, status = 200) => new Response(JSON.stringify(value), {
+  status,
+  headers: { 'Content-Type': 'application/json' },
+});
+
+function makeNote(name: string, minutesAgo = 5, folder = 'drive-note/'): NoteEntry {
+  const d = new Date(Date.now() - minutesAgo * 60_000);
+  return {
+    key: `${folder}${name}`,
+    name,
+    folder,
+    size: 100,
+    last_modified: d.toISOString(),
+  };
+}
+
+function makeNotesResponse(notes: NoteEntry[] = [], folders: NotesResponse['folders'] = [], folder = 'drive-note/'): NotesResponse {
+  return { prefix: 'drive-note/', folder, folders, notes };
+}
+
+let root: Root | null = null;
+let container: HTMLDivElement | null = null;
+let stylesheet: HTMLStyleElement | null = null;
+Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
+
+beforeEach(() => {
+  stylesheet = document.createElement('style');
+  stylesheet.textContent = driveStyles;
+  document.head.append(stylesheet);
+});
+
+afterEach(() => {
+  if (root) act(() => root?.unmount());
+  root = null;
+  container?.remove();
+  container = null;
+  stylesheet?.remove();
+  stylesheet = null;
+  vi.restoreAllMocks();
+  vi.unstubAllGlobals();
+});
+
+async function render(element: React.ReactNode) {
+  container = document.createElement('div');
+  document.body.append(container);
+  root = createRoot(container);
+  await act(async () => {
+    root?.render(element);
+    await Promise.resolve();
+  });
+  return container;
+}
+
+async function settle() {
+  await act(async () => {
+    await Promise.resolve();
+    await new Promise((resolve) => globalThis.setTimeout(resolve, 0));
+    await Promise.resolve();
+  });
+}
+
+async function click(button: HTMLButtonElement | null | undefined) {
+  if (!button) throw new Error('Expected button was not rendered');
+  await act(async () => {
+    button.click();
+    await Promise.resolve();
+  });
+}
+
+describe('formatRelativeTime', () => {
+  it('formats times correctly', () => {
+    const now = new Date();
+    expect(formatRelativeTime(new Date(now.getTime() - 30_000).toISOString())).toBe('刚刚');
+    expect(formatRelativeTime(new Date(now.getTime() - 3 * 60_000).toISOString())).toBe('3分钟前');
+    expect(formatRelativeTime(new Date(now.getTime() - 2 * 3_600_000).toISOString())).toBe('2小时前');
+    expect(formatRelativeTime(new Date(now.getTime() - 3 * 86_400_000).toISOString())).toBe('3天前');
+    expect(formatRelativeTime(new Date(now.getTime() - 30 * 86_400_000).toISOString())).toMatch(/\d{4}-\d{2}-\d{2}/);
+    expect(formatRelativeTime('invalid')).toBe('invalid');
+  });
+});
+
+describe('notes API client', () => {
+  it('calls GET /api/notes and validates the response', async () => {
+    const notes: NoteEntry[] = [makeNote('hello.md'), makeNote('second.md')];
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(json(makeNotesResponse(notes)));
+    const client = new DriveApi('', fetcher);
+    const result = await client.notes();
+    expect(result.prefix).toBe('drive-note/');
+    expect(result.folder).toBe('drive-note/');
+    expect(result.notes).toHaveLength(2);
+    expect(result.notes[0].name).toBe('hello.md');
+    expect(String(fetcher.mock.calls[0][0])).toBe('/api/notes');
+  });
+
+  it('requests a nested notes folder', async () => {
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(json(makeNotesResponse([], [], 'drive-note/work/')));
+    const client = new DriveApi('', fetcher);
+    const result = await client.notes('drive-note/work/');
+    expect(result.folder).toBe('drive-note/work/');
+    expect(String(fetcher.mock.calls[0][0])).toBe('/api/notes?folder=drive-note%2Fwork%2F');
+  });
+
+  it('rejects malformed notes responses', async () => {
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(json({ notes: [{ key: 'a' }] }));
+    const client = new DriveApi('', fetcher);
+    await expect(client.notes()).rejects.toBeInstanceOf(ApiError);
+  });
+});
+
+describe('NotesView', () => {
+  function mockNotesList(client: DriveApi, notes: NoteEntry[] = []) {
+    return vi.spyOn(client, 'notes').mockResolvedValue(makeNotesResponse(notes));
+  }
+
+  it('shows loading state then renders notes list', async () => {
+    const client = new DriveApi('');
+    const notes = [makeNote('first.md'), makeNote('second.md')];
+    mockNotesList(client, notes);
+    const host = await render(createElement(NotesView, { client }));
+    await settle();
+    expect(host.querySelector('.notes-list')).not.toBeNull();
+    const items = host.querySelectorAll('.notes-list-item');
+    expect(items).toHaveLength(2);
+    expect(items[0].querySelector('.note-name')?.textContent).toBe('first');
+    expect(host.querySelector('.note-folder')).toBeNull();
+  });
+
+  it('shows empty state when no notes exist', async () => {
+    const client = new DriveApi('');
+    mockNotesList(client, []);
+    const host = await render(createElement(NotesView, { client }));
+    await settle();
+    expect(host.querySelector('.notes-empty')).not.toBeNull();
+    expect(host.textContent).toContain('还没有笔记');
+  });
+
+  it('filters notes by search query', async () => {
+    const client = new DriveApi('');
+    mockNotesList(client, [makeNote('alpha.md'), makeNote('beta.md'), makeNote('gamma.md')]);
+    const host = await render(createElement(NotesView, { client }));
+    await settle();
+    expect(host.querySelectorAll('.notes-list-item')).toHaveLength(3);
+
+    const input = host.querySelector<HTMLInputElement>('.notes-search-input')!;
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+      setter?.call(input, 'alpha');
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await settle();
+    expect(host.querySelectorAll('.notes-list-item')).toHaveLength(1);
+  });
+
+  it('selects a note and shows the editor', async () => {
+    const client = new DriveApi('');
+    const notes = [makeNote('hello.md')];
+    mockNotesList(client, notes);
+    vi.spyOn(client, 'readNote').mockResolvedValue({
+      key: 'drive-note/hello.md',
+      content: '# Hello',
+      etag: 'etag-1',
+      size: 7,
+      content_type: 'text/markdown',
+    });
+    const host = await render(createElement(NotesView, { client }));
+    await settle();
+
+    await act(async () => { host.querySelector<HTMLElement>('.notes-list-item')!.click(); await Promise.resolve(); });
+    await settle();
+
+    expect(host.querySelector('.notes-editor-header')).not.toBeNull();
+    expect(host.querySelector('.notes-editor-path')?.textContent).toContain('hello.md');
+    expect(host.querySelector('[contenteditable="true"]')?.textContent).toBe('# Hello');
+    expect(host.textContent).toContain('已保存');
+  });
+
+  it('saves on Cmd+S and refreshes the list', async () => {
+    const client = new DriveApi('');
+    mockNotesList(client, [makeNote('hello.md')]);
+    vi.spyOn(client, 'readNote').mockResolvedValue({
+      key: 'drive-note/hello.md',
+      content: '# Hello',
+      etag: 'etag-1',
+      size: 7,
+      content_type: 'text/markdown',
+    });
+    const update = vi.spyOn(client, 'updateNote').mockResolvedValue({
+      key: 'drive-note/hello.md',
+      etag: 'etag-2',
+      size: 12,
+    });
+    const host = await render(createElement(NotesView, { client }));
+    await settle();
+
+    await act(async () => { host.querySelector<HTMLElement>('.notes-list-item')!.click(); await Promise.resolve(); });
+    await settle();
+
+    const editable = host.querySelector<HTMLElement>('[contenteditable="true"]')!;
+    act(() => {
+      editable.textContent = '# Updated';
+      editable.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText' }));
+    });
+    await settle();
+    expect(host.textContent).toContain('有修改');
+
+    act(() => globalThis.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 's', metaKey: true })));
+    await settle();
+    expect(update).toHaveBeenCalledWith({
+      key: 'drive-note/hello.md',
+      content: '# Updated',
+      expected_etag: 'etag-1',
+    });
+  });
+
+  it('opens the create note dialog and creates a new note', async () => {
+    const client = new DriveApi('');
+    const notesCall = mockNotesList(client, []);
+    const createNote = vi.spyOn(client, 'createNote').mockResolvedValue({
+      key: 'drive-note/读书笔记.md',
+      etag: 'etag-new',
+      size: 0,
+    });
+    const host = await render(createElement(NotesView, { client }));
+    await settle();
+
+    await click(host.querySelector<HTMLButtonElement>('.notes-create-btn'));
+    expect(host.querySelector('.form-dialog')).not.toBeNull();
+    expect(host.querySelector('.form-dialog select')).toBeNull();
+    expect(host.textContent).toContain('新建笔记');
+
+    const input = host.querySelector<HTMLInputElement>('.form-dialog input')!;
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+      setter?.call(input, '读书笔记');
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    expect(host.querySelector('.filename-preview')?.textContent).toContain('读书笔记.md');
+
+    // Now mock the refresh to return the newly created note
+    notesCall.mockResolvedValue(makeNotesResponse([makeNote('读书笔记.md')]));
+    vi.spyOn(client, 'readNote').mockResolvedValue({
+      key: 'drive-note/读书笔记.md',
+      content: '',
+      etag: 'etag-new',
+      size: 0,
+      content_type: 'text/markdown',
+    });
+
+    await click(host.querySelector<HTMLButtonElement>('.form-dialog button[type="submit"]'));
+    await settle();
+    expect(createNote).toHaveBeenCalledWith('读书笔记', 'drive-note/');
+  });
+
+  it('lists note folders and opens a folder', async () => {
+    const client = new DriveApi('');
+    const notes = vi.spyOn(client, 'notes').mockResolvedValue(makeNotesResponse(
+      [makeNote('root.md')],
+      [{ prefix: 'drive-note/work/', name: 'work' }],
+    ));
+    const host = await render(createElement(NotesView, { client }));
+    await settle();
+
+    expect(host.querySelectorAll('.notes-folder-item')).toHaveLength(1);
+    expect(host.querySelector('.note-folder-name')?.textContent).toBe('work');
+
+    notes.mockResolvedValue(makeNotesResponse(
+      [makeNote('plan.md', 5, 'drive-note/work/')],
+      [],
+      'drive-note/work/',
+    ));
+    await act(async () => {
+      host.querySelector<HTMLElement>('.notes-folder-item')!.click();
+      await Promise.resolve();
+    });
+    await settle();
+
+    expect(notes.mock.calls.at(-1)?.[0]).toBe('drive-note/work/');
+    expect(host.querySelector('.notes-breadcrumb')?.textContent).toContain('work');
+    expect(host.querySelectorAll('.notes-list-item')).toHaveLength(1);
+    expect(host.querySelector('.note-name')?.textContent).toBe('plan');
+  });
+
+  it('creates a note in the current folder', async () => {
+    const client = new DriveApi('');
+    vi.spyOn(client, 'notes').mockResolvedValue(makeNotesResponse([], [], 'drive-note/work/'));
+    const createNote = vi.spyOn(client, 'createNote').mockResolvedValue({
+      key: 'drive-note/work/plan.md',
+      etag: 'etag-new',
+      size: 0,
+    });
+    vi.spyOn(client, 'readNote').mockResolvedValue({
+      key: 'drive-note/work/plan.md',
+      content: '',
+      etag: 'etag-new',
+      size: 0,
+      content_type: 'text/markdown',
+    });
+    const host = await render(createElement(NotesView, { client }));
+    await settle();
+
+    await click(host.querySelector<HTMLButtonElement>('.notes-create-btn'));
+    const input = host.querySelector<HTMLInputElement>('.form-dialog input')!;
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+      setter?.call(input, 'plan');
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    expect(host.querySelector('.filename-preview')?.textContent).toContain('work/plan.md');
+
+    await click(host.querySelector<HTMLButtonElement>('.form-dialog button[type="submit"]'));
+    await settle();
+    expect(createNote).toHaveBeenCalledWith('plan', 'drive-note/work/');
+  });
+
+  it('opens the create folder dialog and creates a folder', async () => {
+    const client = new DriveApi('');
+    const notes = mockNotesList(client, []);
+    const createFolder = vi.spyOn(client, 'createNoteFolder').mockResolvedValue({ prefix: 'drive-note/工作/' });
+    const host = await render(createElement(NotesView, { client }));
+    await settle();
+
+    await click(host.querySelector<HTMLButtonElement>('.notes-folder-btn'));
+    expect(host.textContent).toContain('新建文件夹');
+
+    const input = host.querySelector<HTMLInputElement>('.form-dialog input')!;
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+      setter?.call(input, '工作');
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    expect(host.querySelector('.filename-preview')?.textContent).toContain('工作/');
+
+    notes.mockResolvedValue(makeNotesResponse([], [], 'drive-note/工作/'));
+    await click(host.querySelector<HTMLButtonElement>('.form-dialog button[type="submit"]'));
+    await settle();
+    expect(createFolder).toHaveBeenCalledWith('drive-note/', '工作');
+    expect(host.querySelector('.notes-breadcrumb')?.textContent).toContain('工作');
+  });
+
+  it('deletes a folder after confirmation', async () => {
+    const client = new DriveApi('');
+    const notes = vi.spyOn(client, 'notes').mockResolvedValue(makeNotesResponse(
+      [],
+      [{ prefix: 'drive-note/archive/', name: 'archive' }],
+    ));
+    const deleteFolder = vi.spyOn(client, 'deleteNoteFolder').mockResolvedValue({ deleted: 3 });
+    const host = await render(createElement(NotesView, { client }));
+    await settle();
+
+    await click(host.querySelector<HTMLButtonElement>('.folder-delete-btn'));
+    expect(host.textContent).toContain('确认删除文件夹');
+
+    notes.mockResolvedValue(makeNotesResponse());
+    await click(Array.from(host.querySelectorAll<HTMLButtonElement>('.dialog-actions button')).find(
+      (button) => button.textContent?.includes('永久删除'),
+    ));
+    await settle();
+    expect(deleteFolder).toHaveBeenCalledWith('drive-note/archive/');
+  });
+
+  it('shows a delete confirmation and deletes a note', async () => {
+    const client = new DriveApi('');
+    mockNotesList(client, [makeNote('doomed.md')]);
+    const deleteNote = vi.spyOn(client, 'deleteNote').mockResolvedValue({ ok: true as const });
+    const host = await render(createElement(NotesView, { client }));
+    await settle();
+
+    const deleteBtn = host.querySelector<HTMLButtonElement>('.note-delete-btn')!;
+    await click(deleteBtn);
+    expect(host.textContent).toContain('确认删除笔记');
+    expect(host.textContent).toContain('doomed.md');
+
+    await click(Array.from(host.querySelectorAll<HTMLButtonElement>('.dialog-actions button')).find(
+      (button) => button.textContent?.includes('永久删除'),
+    ));
+    await settle();
+    expect(deleteNote).toHaveBeenCalledWith('drive-note/doomed.md');
+  });
+
+  it('shows the empty editor state when no note is selected', async () => {
+    const client = new DriveApi('');
+    mockNotesList(client, [makeNote('note.md')]);
+    const host = await render(createElement(NotesView, { client }));
+    await settle();
+    expect(host.querySelector('.notes-empty-state')).not.toBeNull();
+    expect(host.textContent).toContain('选择一个笔记开始编辑');
+  });
+
+  it('guards note switching when dirty', async () => {
+    const client = new DriveApi('');
+    const notes = [makeNote('a.md'), makeNote('b.md')];
+    mockNotesList(client, notes);
+    vi.spyOn(client, 'readNote').mockImplementation(async (key) => ({
+      key,
+      content: `Content of ${key}`,
+      etag: 'etag-1',
+      size: 10,
+      content_type: 'text/markdown',
+    }));
+    const host = await render(createElement(NotesView, { client }));
+    await settle();
+
+    // Select first note
+    await act(async () => { host.querySelectorAll<HTMLElement>('.notes-list-item')[0].click(); await Promise.resolve(); });
+    await settle();
+
+    // Make it dirty
+    const editable = host.querySelector<HTMLElement>('[contenteditable="true"]')!;
+    act(() => {
+      editable.textContent = 'Modified!';
+      editable.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText' }));
+    });
+    await settle();
+
+    // Try to switch to second note
+    await act(async () => { host.querySelectorAll<HTMLElement>('.notes-list-item')[1].click(); await Promise.resolve(); });
+    await settle();
+    // Should show confirmation
+    expect(host.textContent).toContain('放弃未保存修改');
+
+    // Confirm
+    await click(Array.from(host.querySelectorAll<HTMLButtonElement>('.dialog-actions button')).find(
+      (button) => button.textContent?.includes('放弃修改'),
+    ));
+    await settle();
+    // Should now show second note
+    expect(host.querySelector('.notes-editor-path')?.textContent).toContain('b.md');
+  });
+
+  it('forgets discarded changes after going back to the list', async () => {
+    const client = new DriveApi('');
+    mockNotesList(client, [makeNote('a.md'), makeNote('b.md')]);
+    vi.spyOn(client, 'readNote').mockImplementation(async (key) => ({
+      key,
+      content: `Content of ${key}`,
+      etag: 'etag-1',
+      size: 10,
+      content_type: 'text/markdown',
+    }));
+    const host = await render(createElement(NotesView, { client }));
+    await settle();
+    await act(async () => { host.querySelectorAll<HTMLElement>('.notes-list-item')[0].click(); await Promise.resolve(); });
+    await settle();
+    const editable = host.querySelector<HTMLElement>('[contenteditable="true"]')!;
+    act(() => {
+      editable.textContent = 'Modified!';
+      editable.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText' }));
+    });
+    await settle();
+
+    await click(host.querySelector<HTMLButtonElement>('.notes-back-btn'));
+    await settle();
+    expect(host.textContent).toContain('放弃未保存修改');
+    await click(Array.from(host.querySelectorAll<HTMLButtonElement>('.dialog-actions button')).find(
+      (button) => button.textContent?.includes('放弃修改'),
+    ));
+    await settle();
+    expect(host.querySelector('.notes-empty-state')).not.toBeNull();
+
+    // The discarded draft is gone, so opening another note must not ask again.
+    await act(async () => { host.querySelectorAll<HTMLElement>('.notes-list-item')[1].click(); await Promise.resolve(); });
+    await settle();
+    expect(host.textContent).not.toContain('放弃未保存修改');
+    expect(host.querySelector('.notes-editor-path')?.textContent).toContain('b.md');
+    expect(host.querySelector('.notes-save-state')?.textContent).toBe('已保存');
+  });
+
+  it('lets a note the editor merely normalized be left without a discard prompt', async () => {
+    const client = new DriveApi('');
+    mockNotesList(client, [makeNote('a.md')]);
+    vi.spyOn(client, 'readNote').mockResolvedValue({
+      key: 'a.md',
+      content: '* one\n* two',
+      etag: 'etag-1',
+      size: 10,
+      content_type: 'text/markdown',
+    });
+    const host = await render(createElement(NotesView, { client }));
+    await settle();
+    await act(async () => { host.querySelectorAll<HTMLElement>('.notes-list-item')[0].click(); await Promise.resolve(); });
+    await settle();
+    expect(host.querySelector('[contenteditable="true"]')?.textContent).toBe('- one\n- two');
+    expect(host.querySelector('.notes-save-state')?.textContent).toBe('已保存');
+
+    await click(host.querySelector<HTMLButtonElement>('.notes-back-btn'));
+    await settle();
+    expect(host.textContent).not.toContain('放弃未保存修改');
+    expect(host.querySelector('.notes-empty-state')).not.toBeNull();
+  });
+});
+
+describe('Drive section switching', () => {
+  it('switches between files and notes sections chosen by the shell', async () => {
+    vi.spyOn(api, 'files').mockResolvedValue({ files: [], folders: [], next_marker: null, truncated: false });
+    vi.spyOn(api, 'notes').mockResolvedValue(makeNotesResponse());
+
+    const host = await render(driveApp({ section: 'files' }));
+    await settle();
+
+    // Initially shows files view
+    expect(host.querySelector('.workspace')).not.toBeNull();
+    expect(host.querySelector('.drive-module')?.classList.contains('notes-active')).toBe(false);
+
+    // Switch to notes
+    await act(async () => { root?.render(driveApp({ section: 'notes' })); await Promise.resolve(); });
+    await settle();
+    await settle();
+    expect(host.querySelector('.drive-module')?.classList.contains('notes-active')).toBe(true);
+    // Workspace should be gone, notes view eventually loads
+    expect(host.querySelector('.workspace')).toBeNull();
+    expect(host.querySelector('.notes-view')).not.toBeNull();
+
+    // Switch back
+    await act(async () => { root?.render(driveApp({ section: 'files' })); await Promise.resolve(); });
+    await settle();
+    expect(host.querySelector('.workspace')).not.toBeNull();
+    expect(host.querySelector('.notes-view')).toBeNull();
+  });
+});

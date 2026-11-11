@@ -1,0 +1,59 @@
+{
+  "name": "cloud-oss-ai-frontend",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "engines": {
+    "node": ">=22.12.0",
+    "npm": ">=10"
+  },
+  "scripts": {
+    "dev": "vite",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "build": "npm run typecheck && vite build",
+    "preview": "vite preview --host 127.0.0.1",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "native:sync": "npm run build && cap sync",
+    "native:android-debug": "node scripts/native-build.mjs android-debug",
+    "native:android-release": "node scripts/native-build.mjs android-release",
+    "native:ios-simulator": "node scripts/native-build.mjs ios-simulator",
+    "native:ios-archive": "node scripts/native-build.mjs ios-archive",
+    "android:sync": "cap sync android",
+    "android:prepare": "npm run build && npm run android:sync",
+    "android:open": "cap open android",
+    "android:debug": "npm run android:prepare && npm run native:android-debug",
+    "android:release": "npm run android:prepare && npm run native:android-release",
+    "ios:sync": "cap sync ios",
+    "ios:prepare": "npm run build && npm run ios:sync",
+    "ios:open": "cap open ios",
+    "ios:simulator": "npm run ios:prepare && npm run native:ios-simulator",
+    "ios:archive": "npm run ios:prepare && npm run native:ios-archive"
+  },
+  "dependencies": {
+    "@capacitor/android": "8.5.3",
+    "@capacitor/core": "8.5.3",
+    "@capacitor/ios": "8.5.3",
+    "@mdxeditor/editor": "4.3.3",
+    "docx-preview": "^0.4.1",
+    "dompurify": "^3.4.17",
+    "marked": "^18.1.2",
+    "pptx-preview": "^1.0.7",
+    "react": "19.3.1",
+    "react-dom": "19.3.1",
+    "x-data-spreadsheet": "^1.1.9",
+    "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "8.5.3",
+    "@types/node": "24.19.2",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "@vitejs/plugin-react": "6.1.2",
+    "jsdom": "^29.1.1",
+    "less": "^4.9.1",
+    "typescript": "5.9.3",
+    "vite": "8.3.4",
+    "vitest": "5.0.5"
+  }
+}
