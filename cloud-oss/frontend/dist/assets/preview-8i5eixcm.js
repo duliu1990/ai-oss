@@ -1,1 +1,0 @@
-import{i as e}from"./rolldown-runtime-COiEfhsA.js";import{t}from"./client-ZVR05pZA.js";import{c as n,n as r}from"./preload-helper-C0hjvVnc.js";import{t as i}from"./OfficePreview-nzjrQnGF.js";var a=e(n(),1),o=t(),s=r();(0,o.createRoot)(document.getElementById(`root`)).render((0,s.jsx)(a.StrictMode,{children:(0,s.jsx)(i,{})}));
