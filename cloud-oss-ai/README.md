@@ -1,3 +1,4 @@
+<!-- AI-Modified: Qoder Agent 2026-11-23 - Document nginx frontend deployment. -->
 # cloud-oss-ai（轻云）
 
 cloud-oss（私有 OSS 网盘 + 笔记）与 media-player-oss（OSS 音乐播放器）合并后的单应用：一个 FastAPI 后端、一次登录、一个 SPA，外加 Capacitor iOS / Android 客户端。原来的两个项目保持不动，可以与本项目同时运行。
@@ -17,7 +18,7 @@ cloud-oss-ai/
               src/modules/drive/  网盘与笔记
               src/modules/player/ 音乐播放器
               ios/ android/ scripts/native-build.mjs tests/
-  deploy/cloud-oss-ai.conf        只代理后端的 nginx 站点文件
+  deploy/cloud-oss-ai.conf        nginx site serving the Web UI and proxying the backend API
   deploy/backend.sh               Linux 服务器上后台启动 / 停止后端
   run.sh                          本地启动脚本
 ```
@@ -129,20 +130,36 @@ appId `com.cloudossai.app`，名称「轻云」，`webDir: dist`（暂定，可�
 
 PID 和日志都在 `backend/run/`（已加入 `.gitignore`）。脚本直接用 `backend/.venv/bin/python` 启动，记录的 PID 就是服务进程本身。服务器重启后不会自动拉起，需要再执行一次 `start`。
 
-## nginx（只代理后端）
+## nginx (Web UI + backend API)
 
-`deploy/cloud-oss-ai.conf` 是放在 `conf.d` 下的独立站点文件，所有指令都属于 `http { }` 级别，与 `cloud-oss.conf` 结构相同：
+`deploy/cloud-oss-ai.conf` is a standalone site file installed in `conf.d` and included inside nginx's `http { }` block. One port-80 site serves both the frontend and API:
 
-- `= /healthz`、`= /api/auth/login`（每个客户端每分钟 10 次的限流）
-- `= /api/files/download` 和 `= /api/stream`：不缓冲，读超时 1 小时，错误日志不记录带 token 的 URL
-- `^~ /api/files/upload`：6m、请求不缓冲
-- `/api/` 其余接口：8m、读超时 300 秒；`/` 返回 404
+- `/`: static Web UI from `/var/www/cloud-oss-ai`, with an `index.html` fallback for SPA routes and Markdown previews.
+- `/index.html` and `/preview.html`: HTML is not cached; Office previews use their own entry point.
+- `/assets/`: fingerprinted Vite bundles cached for one year; missing assets return 404 instead of HTML.
+- `= /healthz` and `= /api/auth/login`: backend proxy; login is limited to 10 requests per minute per client.
+- `= /api/files/download` and `= /api/stream`: unbuffered proxy with a one-hour read timeout.
+- `^~ /api/files/upload`: 6m body limit, request buffering disabled.
+- Remaining `/api/` routes: 8m body limit and a 300-second read timeout. Bare `/api` returns 404.
+- Access logs omit query strings; download, stream and frontend preview locations suppress routine token-bearing error logs.
 
-安装（先把 `cloud.example.com` 换成你的域名，并加进 `ALLOWED_HOSTS`）：
+Install from the `cloud-oss-ai` directory. Keep `server_name 8.137.103.155` only if it is your server's address; otherwise replace it with your public IP or domain and add that host to `ALLOWED_HOSTS` in `backend/.env`, then restart the backend.
 
 ```bash
+# Build locally or on a server with Node.js 22.12+ and npm.
+npm --prefix frontend ci
+npm --prefix frontend run build
+
+# Copy the CONTENTS of dist, not the dist directory itself.
+sudo mkdir -p /var/www/cloud-oss-ai
+sudo cp -a frontend/dist/. /var/www/cloud-oss-ai/
+
+# Start the configured backend if it is not already running.
+./deploy/backend.sh start
 sudo cp deploy/cloud-oss-ai.conf /etc/nginx/conf.d/cloud-oss-ai.conf
 sudo nginx -t && sudo systemctl reload nginx
 ```
 
-nginx 必须和后端在同一台机器上。不要在 `http { }` 之外 include 这个文件，否则 `nginx -t` 会报错。
+If the server has no Node.js, build locally and transfer `frontend/dist/` contents to `/var/www/cloud-oss-ai/`. Rebuild and copy the frontend after each source update. The nginx worker needs read permission on the files and traverse permission on their parent directories. Change `root` in the site file if you use another deployment path; point it only at the built frontend, never the project root or `backend/`.
+
+nginx and the backend must run on the same machine. Keep the standard `mime.types` include inside `http { }` so JavaScript and CSS are served with correct content types. Do not replace `nginx.conf` with this site file or include it outside `http { }`; `nginx -t` will reject it. Web API requests remain same-origin, so this frontend deployment does not require an additional CORS origin.
