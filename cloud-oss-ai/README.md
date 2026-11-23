@@ -1,4 +1,4 @@
-<!-- AI-Modified: Qoder Agent 2026-11-23 - Document nginx frontend deployment. -->
+<!-- AI-Modified: Qoder Agent 2026-11-23 - Document the three-step server deployment script. -->
 # cloud-oss-ai（轻云）
 
 cloud-oss（私有 OSS 网盘 + 笔记）与 media-player-oss（OSS 音乐播放器）合并后的单应用：一个 FastAPI 后端、一次登录、一个 SPA，外加 Capacitor iOS / Android 客户端。原来的两个项目保持不动，可以与本项目同时运行。
@@ -20,6 +20,7 @@ cloud-oss-ai/
               ios/ android/ scripts/native-build.mjs tests/
   deploy/cloud-oss-ai.conf        nginx site serving the Web UI and proxying the backend API
   deploy/backend.sh               Linux 服务器上后台启动 / 停止后端
+  deploy/deploy.sh                Three-step server deployment: frontend, nginx, background backend
   run.sh                          本地启动脚本
 ```
 
@@ -129,6 +130,24 @@ appId `com.cloudossai.app`，名称「轻云」，`webDir: dist`（暂定，可�
 ```
 
 PID 和日志都在 `backend/run/`（已加入 `.gitignore`）。脚本直接用 `backend/.venv/bin/python` 启动，记录的 PID 就是服务进程本身。服务器重启后不会自动拉起，需要再执行一次 `start`。
+
+## Three-step server deployment
+
+With the project checked out at `/opt/ai-oss/cloud-oss-ai`, run on the Linux server:
+
+```bash
+sudo bash /opt/ai-oss/cloud-oss-ai/deploy/deploy.sh
+```
+
+The script performs these steps in order:
+
+1. Delete all contents of `/var/www/cloud-oss-ai/` (including hidden files and old asset directories), preserve the directory, then copy `/opt/ai-oss/cloud-oss-ai/frontend/dist/.` into it. Set directory/file permissions to 755/644 for nginx.
+2. Install `deploy/cloud-oss-ai.conf` as `/etc/nginx/conf.d/cloud-oss-ai.conf`, run `nginx -t`, and reload nginx (or start it if inactive). If installation or validation fails, restore the previous site file or remove the new one on first deployment.
+3. Run `deploy/backend.sh restart`, then `status`, as the owner of the backend directory. The existing launcher uses `nohup`, so Python stays in the background after the deployment command exits. Logs and PID remain in `backend/run/`.
+
+Prerequisites: Linux with systemd-managed nginx, `curl` and standard GNU/util-linux commands (`flock`, `runuser`, `realpath`), a complete frontend build (`index.html`, `preview.html`, `assets/`), configured `backend/.env`, and installed `backend/.venv`. Prepare the backend once with `bash deploy/backend.sh setup` as the intended backend user, then configure `.env`. The script does not rebuild the frontend or install dependencies. Keep backend files and runtime logs writable by that same user; a root-owned backend directory means the backend runs as root.
+
+Missing prerequisites are checked before clearing the frontend. Symlinked web roots and symlinks in `dist` are rejected, and concurrent deployments are blocked. This is an in-place replacement: frontend availability can briefly be interrupted, and frontend files are not rolled back if a later step fails. Back up anything needed from the web root first. Backend startup does not persist across server reboots; use the existing launcher again afterward.
 
 ## nginx (Web UI + backend API)
 
