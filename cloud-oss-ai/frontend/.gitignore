@@ -1,5 +1,6 @@
+# AI-Modified: Qoder Agent 2026-11-23 - Keep dist trackable for server deployment.
 node_modules/
-dist/
+# dist/ is committed; copied native assets remain ignored below.
 coverage/
 .vite/
 *.tsbuildinfo

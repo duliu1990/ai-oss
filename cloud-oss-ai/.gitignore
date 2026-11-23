@@ -1,3 +1,4 @@
+# AI-Modified: Qoder Agent 2026-11-23 - Track the frontend production build.
 # Secrets: only the .env.example templates are tracked.
 .env
 .env.*
@@ -12,7 +13,7 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 
-# Frontend build output (native-specific ignores live in frontend/.gitignore)
+# Frontend dependencies (frontend/dist is committed for server deployment).
+# Native-specific ignores live in frontend/.gitignore.
 frontend/node_modules/
-frontend/dist/
 .DS_Store
